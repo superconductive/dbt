@@ -379,7 +379,7 @@ class SchemaModelParser(SchemaBaseTestParser):
             original_file_path=path,
             description=description,
             columns=refs.column_info,
-            docrefs=refs.docrefs
+            docrefs=refs.docrefs,
         )
         yield 'patch', patch
 

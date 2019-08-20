@@ -16,7 +16,7 @@ class SourceConfig(object):
         'unique_key',
         'database',
         'severity',
-
+        'docs',
         'incremental_strategy'
     }
 
