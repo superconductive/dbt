@@ -351,7 +351,10 @@ class SchemaModelParser(SchemaBaseTestParser):
 
     def parse_models_entry(self, model_dict, path, package_name, root_dir):
         model_name = model_dict['name']
-        docs_data = model_dict['docs']
+        if 'docs' in model_dict:
+            docs_data = model_dict['docs']
+        else:
+            docs_data={}
         refs = ParserRef()
         for column in model_dict.get('columns', []):
             column_tests = self._parse_column(model_dict, column, package_name,

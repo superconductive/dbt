@@ -84,6 +84,10 @@ CONFIG_CONTRACT = {
                 }
             ]
         },
+        'docs': {
+            'type': 'object',
+            'additionalProperties': True,
+            },
         'severity': {
             'type': 'string',
             'pattern': '([eE][rR][rR][oO][rR]|[wW][aA][rR][nN])',
@@ -562,7 +566,7 @@ PARSED_NODE_PATCH_CONTRACT = {
         }
     },
     'required': [
-        'name', 'original_file_path', 'description', 'columns', 'docrefs', 'docs'
+        'name', 'original_file_path', 'description', 'columns', 'docrefs'
     ],
 }
 
