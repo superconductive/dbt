@@ -161,23 +161,9 @@ UNPARSED_NODE_DESCRIPTION_CONTRACT = {
 }
 
 
-UNPARSED_NODE_DOCS_DATA_CONTRACT = {
-    'properties': {
-        'docs': {
-            'type': 'object',
-            'description': (
-                'A dictionary of key-value pairs which configure attributes '
-                'of the dbt Documentation'
-            ),
-        },
-    },
-}
-
-
 UNPARSED_NODE_UPDATE_CONTRACT = deep_merge(
     UNPARSED_NODE_DESCRIPTION_CONTRACT,
     UNPARSED_COLUMN_DESCRIPTION_CONTRACT,
-    UNPARSED_NODE_DOCS_DATA_CONTRACT,
     {
         'type': 'object',
         'additionalProperties': False,

@@ -351,10 +351,6 @@ class SchemaModelParser(SchemaBaseTestParser):
 
     def parse_models_entry(self, model_dict, path, package_name, root_dir):
         model_name = model_dict['name']
-        if 'docs' in model_dict:
-            docs_data = model_dict['docs']
-        else:
-            docs_data={}
         refs = ParserRef()
         for column in model_dict.get('columns', []):
             column_tests = self._parse_column(model_dict, column, package_name,
@@ -384,7 +380,6 @@ class SchemaModelParser(SchemaBaseTestParser):
             description=description,
             columns=refs.column_info,
             docrefs=refs.docrefs,
-            docs=docs_data,
         )
         yield 'patch', patch
 
