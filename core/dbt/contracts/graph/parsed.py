@@ -190,6 +190,7 @@ class ParsedNodeDefaults(ParsedNodeMandatory):
     columns: Dict[str, ColumnInfo] = field(default_factory=dict)
     patch_path: Optional[str] = None
     build_path: Optional[str] = None
+    docs: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
