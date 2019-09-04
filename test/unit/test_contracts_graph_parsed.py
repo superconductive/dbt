@@ -78,6 +78,7 @@ class TestParsedModelNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs':{},
             'config': {
                 'column_types': {},
                 'enabled': True,
@@ -154,6 +155,7 @@ class TestParsedModelNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': ['tag'],
+            'docs':{},
             'config': {
                 'column_types': {'a': 'text'},
                 'enabled': True,
@@ -324,6 +326,7 @@ class TestParsedModelNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs':{},
             'config': {
                 'column_types': {},
                 'enabled': True,
@@ -429,6 +432,7 @@ class TestParsedHookNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs':{},
             'config': {
                 'column_types': {},
                 'enabled': True,
@@ -504,6 +508,7 @@ class TestParsedHookNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': ['tag'],
+            'docs':{},
             'config': {
                 'column_types': {'a': 'text'},
                 'enabled': True,
@@ -611,6 +616,7 @@ class TestParsedTestNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs':{},
             'config': {
                 'column_types': {},
                 'enabled': True,
@@ -688,6 +694,7 @@ class TestParsedTestNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': ['tag'],
+            'docs':{},
             'config': {
                 'column_types': {'a': 'text'},
                 'enabled': True,

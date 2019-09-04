@@ -33,6 +33,7 @@ class TestCompiledModelNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs':{},
             'config': {
                 'column_types': {},
                 'enabled': True,
@@ -115,6 +116,7 @@ class TestCompiledModelNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs':{},
             'config': {
                 'column_types': {},
                 'enabled': True,
@@ -225,6 +227,7 @@ class TestCompiledTestNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs': {},
             'config': {
                 'column_types': {},
                 'enabled': True,
@@ -308,6 +311,7 @@ class TestCompiledTestNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs':{},
             'config': {
                 'column_types': {},
                 'enabled': True,
