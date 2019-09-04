@@ -1124,6 +1124,7 @@ class TestParsedSnapshotNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs': {},
             'config': {
                 'column_types': {},
                 'enabled': True,
@@ -1229,6 +1230,7 @@ class TestParsedSnapshotNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs':{},
             'config': {
                 'column_types': {},
                 'enabled': True,
@@ -1332,6 +1334,7 @@ class TestParsedSnapshotNode(ContractTestCase):
             'schema': 'test_schema',
             'alias': 'bar',
             'tags': [],
+            'docs':{},
             'config': {
                 'column_types': {},
                 'enabled': True,
