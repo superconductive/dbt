@@ -85,6 +85,7 @@ class SourceConfigTest(TestCase):
             'sort': 'my sort key',
             'tags': [],
             'vars': {'a': 1, 'b': 2},
+            'docs':{},
         }
         self.assertEqual(cfg.config, expect)
 
@@ -117,6 +118,7 @@ class SourceConfigTest(TestCase):
             'sort': 'my sort key',
             'tags': [],
             'vars': {'a': 4, 'b': 2, 'c': 3},
+            'docs':{},
         }
         self.assertEqual(cfg.config, expect)
 
