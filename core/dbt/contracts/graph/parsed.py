@@ -63,6 +63,7 @@ class NodeConfig(ExtensibleJsonSchemaMixin, Replaceable):
     quoting: Dict[str, Any] = field(default_factory=dict)
     column_types: Dict[str, Any] = field(default_factory=dict)
     tags: Union[List[str], str] = field(default_factory=list)
+    docs: Dict[str, Any] = field(default_factory=dict)
     _extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
