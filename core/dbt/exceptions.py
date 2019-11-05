@@ -169,6 +169,11 @@ class RPCCompiling(RuntimeException):
         ' compile status'
     )
 
+    def __init__(self, msg=None, node=None):
+        if msg is None:
+            msg = 'compile in progress'
+        super().__init__(msg, node)
+
 
 class RPCLoadException(RuntimeException):
     CODE = 10011
@@ -237,6 +242,17 @@ class JSONValidationException(ValidationException):
     def __reduce__(self):
         # see https://stackoverflow.com/a/36342588 for why this is necessary
         return (JSONValidationException, (self.typename, self.errors))
+
+
+class UnknownAsyncIDException(Exception):
+    CODE = 10012
+    MESSAGE = 'RPC server got an unknown async ID'
+
+    def __init__(self, task_id):
+        self.task_id = task_id
+
+    def __str__(self):
+        return '{}: {}'.format(self.MESSAGE, self.task_id)
 
 
 class AliasException(ValidationException):
@@ -325,6 +341,16 @@ class CommandResultError(CommandError):
 
     def __str__(self):
         return '{} running: {}'.format(self.msg, self.cmd)
+
+
+class InvalidConnectionException(RuntimeException):
+    def __init__(self, thread_id, known, node=None):
+        self.thread_id = thread_id
+        self.known = known
+        super().__init__(
+            msg='connection never acquired for thread {}, have {}'
+            .format(self.thread_id, self.known)
+        )
 
 
 def raise_compiler_error(msg, node=None) -> NoReturn:

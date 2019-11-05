@@ -1,8 +1,6 @@
 from dbt.contracts.graph.parsed import (
     ParsedNode,
     ParsedAnalysisNode,
-    ParsedDocumentation,
-    ParsedMacro,
     ParsedModelNode,
     ParsedHookNode,
     ParsedRPCNode,
@@ -11,30 +9,23 @@ from dbt.contracts.graph.parsed import (
     ParsedSourceDefinition,
     ParsedTestNode,
     TestConfig,
+    TestMetadata,
     PARSED_TYPES,
 )
-from dbt.node_types import (
-    NodeType,
-    AnalysisType,
-    ModelType,
-    OperationType,
-    RPCCallType,
-    SeedType,
-    SnapshotType,
-    TestType,
-)
+from dbt.node_types import NodeType
 from dbt.contracts.util import Replaceable
+from dbt.exceptions import InternalException, RuntimeException
 
 from hologram import JsonSchemaMixin
 from dataclasses import dataclass, field
-import sqlparse
-from typing import Optional, List, Union
+import sqlparse  # type: ignore
+from typing import Optional, List, Union, Dict, Type
 
 
 @dataclass
 class InjectedCTE(JsonSchemaMixin, Replaceable):
     id: str
-    sql: Optional[str] = None
+    sql: str
 
 # for some frustrating reason, we can't subclass from ParsedNode directly,
 # or typing.Union will flatten CompiledNode+ParsedNode into just ParsedNode.
@@ -54,6 +45,10 @@ class CompiledNode(ParsedNode):
     def prepend_ctes(self, prepended_ctes: List[InjectedCTE]):
         self.extra_ctes_injected = True
         self.extra_ctes = prepended_ctes
+        if self.compiled_sql is None:
+            raise RuntimeException(
+                'Cannot prepend ctes to an unparsed node', self
+            )
         self.injected_sql = _inject_ctes_into_sql(
             self.compiled_sql,
             prepended_ctes,
@@ -74,28 +69,37 @@ class CompiledNode(ParsedNode):
 
 @dataclass
 class CompiledAnalysisNode(CompiledNode):
-    resource_type: AnalysisType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Analysis]})
 
 
 @dataclass
 class CompiledHookNode(CompiledNode):
-    resource_type: OperationType
+    resource_type: NodeType = field(
+        metadata={'restrict': [NodeType.Operation]}
+    )
     index: Optional[int] = None
 
 
 @dataclass
 class CompiledModelNode(CompiledNode):
-    resource_type: ModelType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Model]})
 
 
 @dataclass
 class CompiledRPCNode(CompiledNode):
-    resource_type: RPCCallType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.RPCCall]})
 
 
 @dataclass
 class CompiledSeedNode(CompiledNode):
-    resource_type: SeedType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Seed]})
+    seed_file_path: str = ''
+
+    def __post_init__(self):
+        if self.seed_file_path == '':
+            raise InternalException(
+                'Seeds should always have a seed_file_path'
+            )
 
     @property
     def empty(self):
@@ -105,14 +109,15 @@ class CompiledSeedNode(CompiledNode):
 
 @dataclass
 class CompiledSnapshotNode(CompiledNode):
-    resource_type: SnapshotType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Snapshot]})
 
 
 @dataclass
 class CompiledTestNode(CompiledNode):
-    resource_type: TestType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Test]})
     column_name: Optional[str] = None
     config: TestConfig = field(default_factory=TestConfig)
+    test_metadata: Optional[TestMetadata] = None
 
 
 def _inject_ctes_into_sql(sql: str, ctes: List[InjectedCTE]) -> str:
@@ -175,7 +180,7 @@ def _inject_ctes_into_sql(sql: str, ctes: List[InjectedCTE]) -> str:
     return str(parsed)
 
 
-COMPILED_TYPES = {
+COMPILED_TYPES: Dict[NodeType, Type[CompiledNode]] = {
     NodeType.Analysis: CompiledAnalysisNode,
     NodeType.Model: CompiledModelNode,
     NodeType.Operation: CompiledHookNode,
@@ -200,7 +205,7 @@ def parsed_instance_for(compiled: CompiledNode) -> ParsedNode:
         raise ValueError('invalid resource_type: {}'
                          .format(compiled.resource_type))
 
-    # validate=False to allow extra keys from copmiling
+    # validate=False to allow extra keys from compiling
     return cls.from_dict(compiled.to_dict(), validate=False)
 
 
@@ -216,8 +221,6 @@ CompileResultNode = Union[
     CompiledSnapshotNode,
     CompiledTestNode,
     ParsedAnalysisNode,
-    ParsedDocumentation,
-    ParsedMacro,
     ParsedModelNode,
     ParsedHookNode,
     ParsedRPCNode,

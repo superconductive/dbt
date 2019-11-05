@@ -1,10 +1,18 @@
+import threading
+import time
+import traceback
+from typing import List, Dict, Any
+
+from dbt import deprecations
+from dbt.adapters.base import BaseRelation
 from dbt.logger import GLOBAL_LOGGER as logger
-from dbt.exceptions import NotImplementedException, CompilationException, \
-    RuntimeException, InternalException, missing_materialization
+from dbt.exceptions import (
+    NotImplementedException, CompilationException, RuntimeException,
+    InternalException, missing_materialization
+)
 from dbt.node_types import NodeType
 from dbt.contracts.results import (
     RunModelResult, collect_timing_info, SourceFreshnessResult, PartialResult,
-    RemoteCompileResult, RemoteRunResult, ResultTable,
 )
 from dbt.compilation import compile_node
 
@@ -14,11 +22,6 @@ import dbt.utils
 import dbt.tracking
 import dbt.ui.printer
 import dbt.flags
-from dbt import rpc
-
-import threading
-import time
-import traceback
 
 
 INTERNAL_ERROR_STRING = """This is an error in dbt. Please try again. If \
@@ -36,9 +39,13 @@ def track_model_run(index, num_nodes, run_model_result):
         "run_status": run_model_result.status,
         "run_skipped": run_model_result.skip,
         "run_error": None,
-        "model_materialization": dbt.utils.get_materialization(run_model_result.node),  # noqa
+        "model_materialization": dbt.utils.get_materialization(
+            run_model_result.node
+        ),
         "model_id": dbt.utils.get_hash(run_model_result.node),
-        "hashed_contents": dbt.utils.get_hashed_contents(run_model_result.node),  # noqa
+        "hashed_contents": dbt.utils.get_hashed_contents(
+            run_model_result.node
+        ),
         "timing": run_model_result.timing,
     })
 
@@ -62,6 +69,18 @@ class BaseRunner:
 
         self.skip = False
         self.skip_cause = None
+
+    def get_result_status(self, result) -> Dict[str, str]:
+        if result.error:
+            return {'node_status': 'error', 'node_error': str(result.error)}
+        elif result.skip:
+            return {'node_status': 'skipped'}
+        elif result.fail:
+            return {'node_status': 'failed'}
+        elif result.warn:
+            return {'node_status': 'warn'}
+        else:
+            return {'node_status': 'passed'}
 
     def run_with_hooks(self, manifest):
         if self.skip:
@@ -128,21 +147,21 @@ class BaseRunner:
 
     def compile_and_execute(self, manifest, ctx):
         result = None
-        self.adapter.acquire_connection(self.node.name)
-        with collect_timing_info('compile') as timing_info:
-            # if we fail here, we still have a compiled node to return
-            # this has the benefit of showing a build path for the errant
-            # model
-            ctx.node = self.compile(manifest)
-        ctx.timing.append(timing_info)
-
-        # for ephemeral nodes, we only want to compile, not run
-        if not ctx.node.is_ephemeral_model:
-            with collect_timing_info('execute') as timing_info:
-                result = self.run(ctx.node, manifest)
-                ctx.node = result.node
-
+        with self.adapter.connection_for(self.node):
+            with collect_timing_info('compile') as timing_info:
+                # if we fail here, we still have a compiled node to return
+                # this has the benefit of showing a build path for the errant
+                # model
+                ctx.node = self.compile(manifest)
             ctx.timing.append(timing_info)
+
+            # for ephemeral nodes, we only want to compile, not run
+            if not ctx.node.is_ephemeral_model:
+                with collect_timing_info('execute') as timing_info:
+                    result = self.run(ctx.node, manifest)
+                    ctx.node = result.node
+
+                ctx.timing.append(timing_info)
 
         return result
 
@@ -303,6 +322,41 @@ class CompileRunner(BaseRunner):
         return compile_node(self.adapter, self.config, self.node, manifest, {})
 
 
+# make sure that we got an ok result back from a materialization
+def _validate_materialization_relations_dict(
+    inp: Dict[Any, Any], model
+) -> List[BaseRelation]:
+    try:
+        relations_value = inp['relations']
+    except KeyError:
+        msg = (
+            'Invalid return value from materialization, "relations" '
+            'not found, got keys: {}'.format(list(inp))
+        )
+        raise CompilationException(msg, node=model) from None
+
+    if not isinstance(relations_value, list):
+        msg = (
+            'Invalid return value from materialization, "relations" '
+            'not a list, got: {}'.format(relations_value)
+        )
+        raise CompilationException(msg, node=model) from None
+
+    relations: List[BaseRelation] = []
+    for relation in relations_value:
+        if not isinstance(relation, BaseRelation):
+            msg = (
+                'Invalid return value from materialization, '
+                '"relations" contains non-Relation: {}'
+                .format(relation)
+            )
+            raise CompilationException(msg, node=model)
+
+        assert isinstance(relation, BaseRelation)
+        relations.append(relation)
+    return relations
+
+
 class ModelRunner(CompileRunner):
     def get_node_representation(self):
         if self.config.credentials.database == self.node.database:
@@ -339,6 +393,25 @@ class ModelRunner(CompileRunner):
         result = context['load_result']('main')
         return RunModelResult(model, status=result.status)
 
+    def _materialization_relations(
+        self, result: Any, model
+    ) -> List[BaseRelation]:
+        if isinstance(result, str):
+            deprecations.warn('materialization-return',
+                              materialization=model.get_materialization())
+            return [
+                self.adapter.Relation.create_from(self.config, model)
+            ]
+
+        if isinstance(result, dict):
+            return _validate_materialization_relations_dict(result, model)
+
+        msg = (
+            'Invalid return value from materialization, expected a dict '
+            'with key "relations", got: {}'.format(str(result))
+        )
+        raise CompilationException(msg, node=model)
+
     def execute(self, model, manifest):
         context = dbt.context.runtime.generate(
             model, self.config, manifest)
@@ -350,21 +423,36 @@ class ModelRunner(CompileRunner):
         if materialization_macro is None:
             missing_materialization(model, self.adapter.type())
 
-        materialization_macro.generator(context)()
+        if 'config' not in context:
+            raise InternalException(
+                'Invalid materialization context generated, missing config: {}'
+                .format(context)
+            )
+        context_config = context['config']
 
-        # we must have built a new model, add it to the cache
-        relation = self.adapter.Relation.create_from_node(self.config, model,
-                                                          dbt_created=True)
-        self.adapter.cache_new_relation(relation)
+        hook_ctx = self.adapter.pre_model_hook(context_config)
+        try:
+            result = materialization_macro.generator(context)()
+        finally:
+            self.adapter.post_model_hook(context_config, hook_ctx)
+
+        for relation in self._materialization_relations(result, model):
+            self.adapter.cache_added(relation.incorporate(dbt_created=True))
 
         return self._build_run_model_result(model, context)
 
 
 class FreshnessRunner(BaseRunner):
     def on_skip(self):
-        raise dbt.exceptions.RuntimeException(
+        raise RuntimeException(
             'Freshness: nodes cannot be skipped!'
         )
+
+    def get_result_status(self, result) -> Dict[str, str]:
+        if result.error:
+            return {'node_status': 'error', 'node_error': str(result.error)}
+        else:
+            return {'node_status': str(result.status)}
 
     def before_execute(self):
         description = 'freshness of {0.source_name}.{0.name}'.format(self.node)
@@ -397,13 +485,23 @@ class FreshnessRunner(BaseRunner):
         return result
 
     def execute(self, compiled_node, manifest):
+        # we should only be here if we compiled_node.has_freshness, and
+        # therefore loaded_at_field should be a str. If this invariant is
+        # broken, raise!
+        if compiled_node.loaded_at_field is None:
+            raise InternalException(
+                'Got to execute for source freshness of a source that has no '
+                'loaded_at_field!'
+            )
+
         relation = self.adapter.Relation.create_from_source(compiled_node)
         # given a Source, calculate its fresnhess.
-        with self.adapter.connection_named(compiled_node.unique_id):
+        with self.adapter.connection_for(compiled_node):
             self.adapter.clear_transaction()
             freshness = self.adapter.calculate_freshness(
                 relation,
                 compiled_node.loaded_at_field,
+                compiled_node.freshness.filter,
                 manifest=manifest
             )
 
@@ -476,11 +574,14 @@ class TestRunner(CompileRunner):
 
 class SnapshotRunner(ModelRunner):
     def describe_node(self):
-        return "snapshot {}".format(self.node.name)
+        return "snapshot {}".format(self.get_node_representation())
 
     def print_result_line(self, result):
-        dbt.ui.printer.print_snapshot_result_line(result, self.node_index,
-                                                  self.num_nodes)
+        dbt.ui.printer.print_snapshot_result_line(
+            result,
+            self.get_node_representation(),
+            self.node_index,
+            self.num_nodes)
 
 
 class SeedRunner(ModelRunner):
@@ -507,81 +608,3 @@ class SeedRunner(ModelRunner):
                                               schema_name,
                                               self.node_index,
                                               self.num_nodes)
-
-
-class RPCCompileRunner(CompileRunner):
-    def __init__(self, config, adapter, node, node_index, num_nodes):
-        super().__init__(config, adapter, node, node_index, num_nodes)
-
-    def handle_exception(self, e, ctx):
-        logger.debug('Got an exception: {}'.format(e), exc_info=True)
-        if isinstance(e, dbt.exceptions.Exception):
-            if isinstance(e, dbt.exceptions.RuntimeException):
-                e.node = ctx.node
-            return rpc.dbt_error(e)
-        elif isinstance(e, rpc.RPCException):
-            return e
-        else:
-            return rpc.server_error(e)
-
-    def before_execute(self):
-        pass
-
-    def after_execute(self, result):
-        pass
-
-    def compile(self, manifest):
-        return compile_node(self.adapter, self.config, self.node, manifest, {},
-                            write=False)
-
-    def execute(self, compiled_node, manifest):
-        return RemoteCompileResult(
-            raw_sql=compiled_node.raw_sql,
-            compiled_sql=compiled_node.injected_sql,
-            node=compiled_node,
-            timing=[],  # this will get added later
-        )
-
-    def error_result(self, node, error, start_time, timing_info):
-        raise error
-
-    def ephemeral_result(self, node, start_time, timing_info):
-        raise NotImplementedException(
-            'cannot execute ephemeral nodes remotely!'
-        )
-
-    def from_run_result(self, result, start_time, timing_info):
-        return RemoteCompileResult(
-            raw_sql=result.raw_sql,
-            compiled_sql=result.compiled_sql,
-            node=result.node,
-            timing=timing_info,
-        )
-
-
-class RPCExecuteRunner(RPCCompileRunner):
-    def from_run_result(self, result, start_time, timing_info):
-        return RemoteRunResult(
-            raw_sql=result.raw_sql,
-            compiled_sql=result.compiled_sql,
-            node=result.node,
-            table=result.table,
-            timing=timing_info,
-        )
-
-    def execute(self, compiled_node, manifest):
-        status, table = self.adapter.execute(compiled_node.injected_sql,
-                                             fetch=True)
-
-        table = ResultTable(
-            column_names=list(table.column_names),
-            rows=[list(row) for row in table],
-        )
-
-        return RemoteRunResult(
-            raw_sql=compiled_node.raw_sql,
-            compiled_sql=compiled_node.injected_sql,
-            node=compiled_node,
-            table=table,
-            timing=[],
-        )

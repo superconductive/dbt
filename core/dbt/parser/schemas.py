@@ -3,14 +3,18 @@ from typing import Iterable, Dict, Any, Union, List, Optional
 
 from hologram import ValidationError
 
-from dbt.context.common import generate_config_context
+from dbt.context.base import ConfigRenderContext
 
 from dbt.clients.jinja import get_rendered
 from dbt.clients.yaml_helper import load_yaml_text
 from dbt.config.renderer import ConfigRenderer
 from dbt.contracts.graph.manifest import SourceFile
 from dbt.contracts.graph.parsed import (
-    ParsedNodePatch, ParsedTestNode, ParsedSourceDefinition, ColumnInfo, Docref
+    ParsedNodePatch,
+    ParsedSourceDefinition,
+    ColumnInfo,
+    Docref,
+    ParsedTestNode,
 )
 from dbt.contracts.graph.unparsed import (
     UnparsedSourceDefinition, UnparsedNodeUpdate, NamedTested,
@@ -18,11 +22,10 @@ from dbt.contracts.graph.unparsed import (
 )
 from dbt.context.parser import docs
 from dbt.exceptions import (
-    warn_or_error, validator_error_message, JSONValidationException,
+    validator_error_message, JSONValidationException,
     raise_invalid_schema_yml_version, ValidationException, CompilationException
 )
-from dbt.logger import GLOBAL_LOGGER as logger
-from dbt.node_types import NodeType, SourceType
+from dbt.node_types import NodeType
 from dbt.parser.base import SimpleParser
 from dbt.parser.search import FileBlock, FilesystemSearcher
 from dbt.parser.schema_test_builders import (
@@ -37,19 +40,24 @@ UnparsedSchemaYaml = Union[UnparsedSourceDefinition, UnparsedNodeUpdate]
 TestDef = Union[str, Dict[str, Any]]
 
 
-def warn_invalid(filepath, key, value, explain):
-    msg = (
-        "Invalid test config given in {} @ {}: {} {}"
-    ).format(filepath, key, value, explain)
-    warn_or_error(msg, value, log_fmt='Compilation warning: {}\n')
-
-
-def warn_validation_error(filepath, key, value, exc):
-    if isinstance(exc, ValidationError):
-        msg = validator_error_message(exc)
+def error_context(
+    path: str,
+    key: str,
+    data: Any,
+    cause: Union[str, ValidationException, JSONValidationException]
+) -> str:
+    """Provide contextual information about an error while parsing
+    """
+    if isinstance(cause, str):
+        reason = cause
+    elif isinstance(cause, ValidationError):
+        reason = validator_error_message(cause)
     else:
-        msg = exc.msg
-    warn_invalid(filepath, key, value, '- ' + msg)
+        reason = cause.msg
+    return (
+        'Invalid {key} config given in {path} @ {key}: {data} - {reason}'
+        .format(key=key, path=path, data=data, reason=reason)
+    )
 
 
 class ParserRef:
@@ -58,9 +66,10 @@ class ParserRef:
         self.column_info: Dict[str, ColumnInfo] = {}
         self.docrefs: List[Docref] = []
 
-    def add(self, column_name, description):
+    def add(self, column_name, description, data_type):
         self.column_info[column_name] = ColumnInfo(name=column_name,
-                                                   description=description)
+                                                   description=description,
+                                                   data_type=data_type)
 
 
 def collect_docrefs(
@@ -154,7 +163,10 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
             if str_keys:
                 yield entry
             else:
-                warn_invalid(path, key, entry, '(expected a Dict[str])')
+                msg = error_context(
+                    path, key, data, 'expected a dict with string keys'
+                )
+                raise CompilationException(msg)
 
     def read_yaml_models(
         self, yaml: YamlBlock
@@ -165,10 +177,9 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
         for data in self._get_dicts_for(yaml, yaml_key):
             try:
                 model = UnparsedNodeUpdate.from_dict(data)
-                # we don't want to fail the full run, but we do want to fail
-                # parsing this block
             except (ValidationError, JSONValidationException) as exc:
-                warn_validation_error(path, yaml_key, data, exc)
+                msg = error_context(path, yaml_key, data, exc)
+                raise CompilationException(msg) from exc
             else:
                 yield model
 
@@ -183,7 +194,8 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
                 data = self._renderer.render_schema_source(data)
                 source = UnparsedSourceDefinition.from_dict(data)
             except (ValidationError, JSONValidationException) as exc:
-                warn_validation_error(path, yaml_key, data, exc)
+                msg = error_context(path, yaml_key, data, exc)
+                raise CompilationException(msg) from exc
             else:
                 for table in source.tables:
                     yield SourceTarget(source, table)
@@ -191,15 +203,17 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
     def _yaml_from_file(
         self, source_file: SourceFile
     ) -> Optional[Dict[str, Any]]:
-        """If loading the yaml fails, the file will be skipped with an INFO
-        message. TODO(jeb): should this be a warning?
+        """If loading the yaml fails, raise an exception.
         """
         path: str = source_file.path.relative_path
         try:
             return load_yaml_text(source_file.contents)
         except ValidationException as e:
-            logger.info("Error reading {}:{} - Skipping\n{}".format(
-                        self.project.project_name, path, e))
+            reason = validator_error_message(e)
+            raise CompilationException(
+                'Error reading {}: {} - {}'
+                .format(self.project.project_name, path, reason)
+            )
         return None
 
     def parse_column(
@@ -207,9 +221,10 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
     ) -> None:
         column_name = column.name
         description = column.description
+        data_type = column.data_type
         collect_docrefs(block.target, refs, column_name, description)
 
-        refs.add(column_name, description)
+        refs.add(column_name, description, data_type)
 
         if not column.tests:
             return
@@ -222,7 +237,7 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
         builds the initial node to be parsed, but rendering is basically the
         same
         """
-        render_ctx = generate_config_context(self.root_project.cli_vars)
+        render_ctx = ConfigRenderContext(self.root_project.cli_vars).to_dict()
         builder = TestBuilder[Target](
             test=block.test,
             target=block.target,
@@ -244,6 +259,12 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
 
         config = self.initial_config(fqn)
 
+        metadata = {
+            'namespace': builder.namespace,
+            'name': builder.name,
+            'kwargs': builder.args,
+        }
+
         node = self._create_parsetime_node(
             block=block,
             path=compiled_path,
@@ -252,6 +273,7 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
             name=builder.fqn_name,
             raw_sql=builder.build_raw_sql(),
             column_name=block.column_name,
+            test_metadata=metadata,
         )
         self.render_update(node, config)
         self.add_result_node(block, node)
@@ -277,11 +299,11 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
         except CompilationException as exc:
             context = _trimmed(str(block.target))
             msg = (
-                'Compilation warning: Invalid test config given in {}:'
+                'Invalid test config given in {}:'
                 '\n\t{}\n\t@: {}'
                 .format(block.path.original_file_path, exc.msg, context)
             )
-            warn_or_error(msg, None)
+            raise CompilationException(msg) from exc
 
     def _calculate_freshness(
         self,
@@ -339,6 +361,7 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
             unique_id=unique_id,
             name=table.name,
             description=description,
+            external=table.external,
             source_name=source.name,
             source_description=source_description,
             loader=source.loader,
@@ -346,7 +369,7 @@ class SchemaParser(SimpleParser[SchemaTestBlock, ParsedTestNode]):
             loaded_at_field=loaded_at_field,
             freshness=freshness,
             quoting=quoting,
-            resource_type=SourceType(NodeType.Source),
+            resource_type=NodeType.Source,
             fqn=[self.project.project_name, source.name, table.name],
         )
 

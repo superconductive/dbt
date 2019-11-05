@@ -1,15 +1,13 @@
-
 from copy import deepcopy
-import pprint
 
+from .profile import Profile
+from .project import Project
 from dbt.utils import parse_cli_vars
 from dbt.contracts.project import Configuration
 from dbt.exceptions import DbtProjectError
 from dbt.exceptions import validator_error_message
 from dbt.adapters.factory import get_relation_class_by_name
 
-from .profile import Profile
-from .project import Project
 
 from hologram import ValidationError
 
@@ -22,8 +20,9 @@ class RuntimeConfig(Project, Profile):
                  macro_paths, data_paths, test_paths, analysis_paths,
                  docs_paths, target_path, snapshot_paths, clean_targets,
                  log_path, modules_path, quoting, models, on_run_start,
-                 on_run_end, seeds, dbt_version, profile_name, target_name,
-                 config, threads, credentials, packages, args):
+                 on_run_end, seeds, snapshots, dbt_version, profile_name,
+                 target_name, config, threads, credentials, packages,
+                 query_comment, args):
         # 'vars'
         self.args = args
         self.cli_vars = parse_cli_vars(getattr(args, 'vars', '{}'))
@@ -50,8 +49,10 @@ class RuntimeConfig(Project, Profile):
             on_run_start=on_run_start,
             on_run_end=on_run_end,
             seeds=seeds,
+            snapshots=snapshots,
             dbt_version=dbt_version,
-            packages=packages
+            packages=packages,
+            query_comment=query_comment,
         )
         # 'profile'
         Profile.__init__(
@@ -73,11 +74,11 @@ class RuntimeConfig(Project, Profile):
         :param args argparse.Namespace: The parsed command-line arguments.
         :returns RuntimeConfig: The new configuration.
         """
-        quoting = deepcopy(
+        quoting = (
             get_relation_class_by_name(profile.credentials.type)
-            .DEFAULTS['quote_policy']
-        )
-        quoting.update(project.quoting)
+            .get_default_quote_policy()
+            .replace_dict(project.quoting)
+        ).to_dict()
 
         return cls(
             project_name=project.project_name,
@@ -99,8 +100,10 @@ class RuntimeConfig(Project, Profile):
             on_run_start=project.on_run_start,
             on_run_end=project.on_run_end,
             seeds=project.seeds,
+            snapshots=project.snapshots,
             dbt_version=project.dbt_version,
             packages=project.packages,
+            query_comment=project.query_comment,
             profile_name=profile.profile_name,
             target_name=profile.target_name,
             config=profile.config,
@@ -148,7 +151,7 @@ class RuntimeConfig(Project, Profile):
         return result
 
     def __str__(self):
-        return pprint.pformat(self.serialize())
+        return str(self.serialize())
 
     def validate(self):
         """Validate the configuration against its contract.

@@ -1,8 +1,9 @@
 from typing import Dict, Optional, Tuple
 
-from dbt.logger import GLOBAL_LOGGER as logger
-from dbt.utils import get_materialization
+from dbt.logger import GLOBAL_LOGGER as logger, DbtStatusMessage, TextOnly
 from dbt.node_types import NodeType
+from dbt.tracking import InvocationProcessor
+from dbt.utils import get_materialization
 import dbt.ui.colors
 
 import time
@@ -192,14 +193,16 @@ def print_model_result_line(
         result.execution_time)
 
 
-def print_snapshot_result_line(result, index: int, total: int):
+def print_snapshot_result_line(
+    result, description: str, index: int, total: int
+) -> None:
     model = result.node
 
     info, status = get_printable_result(result, 'snapshotted', 'snapshotting')
     cfg = model.config.to_dict()
 
-    msg = "{info} {name}".format(
-        info=info, name=model.name, **cfg)
+    msg = "{info} {description}".format(
+        info=info, description=description, **cfg)
     print_fancy_output_line(
         msg,
         status,
@@ -293,25 +296,35 @@ def print_run_result_error(
     result, newline: bool = True, is_warning: bool = False
 ) -> None:
     if newline:
-        logger.info("")
+        with TextOnly():
+            logger.info("")
 
     if result.fail or (is_warning and result.warn):
         if is_warning:
             color = yellow
             info = 'Warning'
+            logger_fn = logger.warning
         else:
             color = red
             info = 'Failure'
-        logger.info(color("{} in {} {} ({})").format(
+            logger_fn = logger.error
+        logger_fn(color("{} in {} {} ({})").format(
             info,
             result.node.resource_type,
             result.node.name,
             result.node.original_file_path))
-        status = dbt.utils.pluralize(result.status, 'result')
-        logger.info("  Got {}, expected 0.".format(status))
+
+        try:
+            int(result.status)
+        except ValueError:
+            logger.error("  Status: {}".format(result.status))
+        else:
+            status = dbt.utils.pluralize(result.status, 'result')
+            logger.error("  Got {}, expected 0.".format(status))
 
         if result.node.build_path is not None:
-            logger.info("")
+            with TextOnly():
+                logger.info("")
             logger.info("  compiled SQL at {}".format(
                 result.node.build_path))
 
@@ -319,10 +332,10 @@ def print_run_result_error(
         first = True
         for line in result.error.split("\n"):
             if first:
-                logger.info(yellow(line))
+                logger.error(yellow(line))
                 first = False
             else:
-                logger.info(line)
+                logger.error(line)
 
 
 def print_skip_caused_by_error(
@@ -349,19 +362,21 @@ def print_end_of_run_summary(
     else:
         message = green('Completed successfully')
 
-    logger.info('')
+    with TextOnly():
+        logger.info('')
     logger.info('{}'.format(message))
 
 
 def print_run_end_messages(results, early_exit: bool = False) -> None:
     errors = [r for r in results if r.error is not None or r.fail]
     warnings = [r for r in results if r.warn]
-    print_end_of_run_summary(len(errors), len(warnings), early_exit)
+    with DbtStatusMessage(), InvocationProcessor():
+        print_end_of_run_summary(len(errors), len(warnings), early_exit)
 
-    for error in errors:
-        print_run_result_error(error, is_warning=False)
+        for error in errors:
+            print_run_result_error(error, is_warning=False)
 
-    for warning in warnings:
-        print_run_result_error(warning, is_warning=True)
+        for warning in warnings:
+            print_run_result_error(warning, is_warning=True)
 
-    print_run_status_line(results)
+        print_run_status_line(results)

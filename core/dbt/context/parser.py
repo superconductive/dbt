@@ -89,7 +89,7 @@ class DatabaseWrapper(dbt.context.common.BaseDatabaseWrapper):
             )
 
 
-class Var(dbt.context.common.Var):
+class Var(dbt.context.base.Var):
     def get_missing_var(self, var_name):
         # in the parser, just always return None.
         return None
@@ -104,17 +104,24 @@ class RefResolver(dbt.context.common.BaseResolver):
         else:
             dbt.exceptions.ref_invalid_args(self.model, args)
 
-        return self.Relation.create_from_node(self.config, self.model)
+        return self.Relation.create_from(self.config, self.model)
 
 
 class SourceResolver(dbt.context.common.BaseResolver):
-    def __call__(self, source_name, table_name):
+    def __call__(self, *args):
         # When you call source(), this is what happens at parse time
-        self.model.sources.append([source_name, table_name])
-        return self.Relation.create_from_node(self.config, self.model)
+        if len(args) == 2:
+            self.model.sources.append(list(args))
+
+        else:
+            dbt.exceptions.raise_compiler_error(
+                "source() takes exactly two arguments ({} given)"
+                .format(len(args)), self.model)
+
+        return self.Relation.create_from(self.config, self.model)
 
 
-class Provider:
+class Provider(dbt.context.common.Provider):
     execute = False
     Config = Config
     DatabaseWrapper = DatabaseWrapper
@@ -128,9 +135,9 @@ def generate(model, runtime_config, manifest, source_config):
     # have to acquire it.
     # In the future, it would be nice to lazily open the connection, as in some
     # projects it would be possible to parse without connecting to the db
-    with get_adapter(runtime_config).connection_named(model.name):
+    with get_adapter(runtime_config).connection_for(model):
         return dbt.context.common.generate(
-            model, runtime_config, manifest, source_config, Provider()
+            model, runtime_config, manifest, Provider(), source_config
         )
 
 

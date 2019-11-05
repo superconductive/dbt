@@ -2,7 +2,7 @@ import hashlib
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Union, Mapping
+from typing import Dict, List, Optional, Union, Mapping, Any
 from uuid import UUID
 
 from hologram import JsonSchemaMixin
@@ -11,7 +11,6 @@ from dbt.contracts.graph.parsed import ParsedNode, ParsedMacro, \
     ParsedDocumentation
 from dbt.contracts.graph.compiled import CompileResultNode
 from dbt.contracts.util import Writable, Replaceable
-from dbt.config import Project
 from dbt.exceptions import raise_duplicate_resource_name, InternalException
 from dbt.logger import GLOBAL_LOGGER as logger
 from dbt.node_types import NodeType
@@ -25,16 +24,31 @@ NodeEdgeMap = Dict[str, List[str]]
 class FilePath(JsonSchemaMixin):
     searched_path: str
     relative_path: str
-    absolute_path: str
+    project_root: str
 
     @property
-    def search_key(self):
-        # TODO: should this be project root + original_file_path?
+    def search_key(self) -> str:
+        # TODO: should this be project name + path relative to project root?
         return self.absolute_path
 
     @property
-    def original_file_path(self):
-        return os.path.join(self.searched_path, self.relative_path)
+    def full_path(self) -> str:
+        # useful for symlink preservation
+        return os.path.join(
+            self.project_root, self.searched_path, self.relative_path
+        )
+
+    @property
+    def absolute_path(self) -> str:
+        return os.path.abspath(self.full_path)
+
+    @property
+    def original_file_path(self) -> str:
+        # this is mostly used for reporting errors. It doesn't show the project
+        # name, should it?
+        return os.path.join(
+            self.searched_path, self.relative_path
+        )
 
 
 @dataclass
@@ -151,9 +165,21 @@ class SourceFile(JsonSchemaMixin):
 
 @dataclass
 class ManifestMetadata(JsonSchemaMixin, Replaceable):
-    project_id: Optional[str]
-    user_id: Optional[UUID]
-    send_anonymous_usage_stats: Optional[bool]
+    project_id: Optional[str] = None
+    user_id: Optional[UUID] = None
+    send_anonymous_usage_stats: Optional[bool] = None
+
+    def __post_init__(self):
+        if tracking.active_user is None:
+            return
+
+        if self.user_id is None:
+            self.user_id = tracking.active_user.id
+
+        if self.send_anonymous_usage_stats is None:
+            self.send_anonymous_usage_stats = (
+                not tracking.active_user.do_not_track
+            )
 
 
 def _sort_values(dct):
@@ -182,7 +208,7 @@ def _deepcopy(value):
     return value.from_dict(value.to_dict())
 
 
-@dataclass(init=False)
+@dataclass
 class Manifest:
     """The manifest for the full graph, after parsing and during compilation.
     """
@@ -192,27 +218,8 @@ class Manifest:
     generated_at: datetime
     disabled: List[ParsedNode]
     files: Mapping[str, SourceFile]
-    metadata: ManifestMetadata = field(init=False)
-
-    def __init__(
-        self,
-        nodes: Mapping[str, CompileResultNode],
-        macros: Mapping[str, ParsedMacro],
-        docs: Mapping[str, ParsedDocumentation],
-        generated_at: datetime,
-        disabled: List[ParsedNode],
-        files: Mapping[str, SourceFile],
-        config: Optional[Project] = None,
-    ) -> None:
-        self.metadata = self.get_metadata(config)
-        self.nodes = nodes
-        self.macros = macros
-        self.docs = docs
-        self.generated_at = generated_at
-        self.disabled = disabled
-        self.files = files
-        self._flat_graph = None
-        super(Manifest, self).__init__()
+    metadata: ManifestMetadata = field(default_factory=ManifestMetadata)
+    flat_graph: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_macros(cls, macros=None, files=None) -> 'Manifest':
@@ -227,7 +234,6 @@ class Manifest:
             generated_at=datetime.utcnow(),
             disabled=[],
             files=files,
-            config=None,
         )
 
     def update_node(self, new_node):
@@ -244,38 +250,17 @@ class Manifest:
             )
         self.nodes[unique_id] = new_node
 
-    @staticmethod
-    def get_metadata(config: Optional[Project]) -> ManifestMetadata:
-        project_id = None
-        user_id = None
-        send_anonymous_usage_stats = None
-
-        if config is not None:
-            project_id = config.hashed_name()
-
-        if tracking.active_user is not None:
-            user_id = tracking.active_user.id
-            send_anonymous_usage_stats = not tracking.active_user.do_not_track
-
-        return ManifestMetadata(
-            project_id=project_id,
-            user_id=user_id,
-            send_anonymous_usage_stats=send_anonymous_usage_stats,
-        )
-
-    def to_flat_graph(self):
-        """This function gets called in context.common by each node, so we want
-        to cache it. Make sure you don't call this until you're done with
-        building your manifest!
+    def build_flat_graph(self):
+        """This attribute is used in context.common by each node, so we want to
+        only build it once and avoid any concurrency issues around it.
+        Make sure you don't call this until you're done with building your
+        manifest!
         """
-        if self._flat_graph is None:
-            self._flat_graph = {
-                'nodes': {
-                    k: v.to_dict(omit_none=False)
-                    for k, v in self.nodes.items()
-                },
-            }
-        return self._flat_graph
+        self.flat_graph = {
+            'nodes': {
+                k: v.to_dict(omit_none=False) for k, v in self.nodes.items()
+            },
+        }
 
     def find_disabled_by_name(self, name, package=None):
         return dbt.utils.find_in_list_by_name(self.disabled, name, package,
@@ -367,38 +352,6 @@ class Manifest:
 
         return resource_fqns
 
-    def _filter_subgraph(self, subgraph, predicate):
-        """
-        Given a subgraph of the manifest, and a predicate, filter
-        the subgraph using that predicate. Generates a list of nodes.
-        """
-        to_return = []
-
-        for unique_id, item in subgraph.items():
-            if predicate(item):
-                to_return.append(item)
-
-        return to_return
-
-    def _model_matches_schema_and_table(self, schema, table, model):
-        if model.resource_type == NodeType.Source:
-            return (model.schema.lower() == schema.lower() and
-                    model.identifier.lower() == table.lower())
-        return (model.schema.lower() == schema.lower() and
-                model.alias.lower() == table.lower())
-
-    def get_unique_ids_for_schema_and_table(self, schema, table):
-        """
-        Given a schema and table, find matching models, and return
-        their unique_ids. A schema and table may have more than one
-        match if the relation matches both a source and a seed, for instance.
-        """
-        def predicate(model):
-            return self._model_matches_schema_and_table(schema, table, model)
-
-        matching = list(self._filter_subgraph(self.nodes, predicate))
-        return [match.unique_id for match in matching]
-
     def add_nodes(self, new_nodes):
         """Add the given dict of new nodes to the manifest."""
         for unique_id, node in new_nodes.items():
@@ -434,11 +387,6 @@ class Manifest:
                     'not found or is disabled').format(patch.name)
                 )
 
-    def __getattr__(self, name):
-        raise AttributeError("'{}' object has no attribute '{}'".format(
-            type(self).__name__, name)
-        )
-
     def get_used_schemas(self, resource_types=None):
         return frozenset({
             (node.database, node.schema)
@@ -449,14 +397,14 @@ class Manifest:
     def get_used_databases(self):
         return frozenset(node.database for node in self.nodes.values())
 
-    def deepcopy(self, config=None):
+    def deepcopy(self):
         return Manifest(
             nodes={k: _deepcopy(v) for k, v in self.nodes.items()},
             macros={k: _deepcopy(v) for k, v in self.macros.items()},
             docs={k: _deepcopy(v) for k, v in self.docs.items()},
             generated_at=self.generated_at,
             disabled=[_deepcopy(n) for n in self.disabled],
-            config=config,
+            metadata=self.metadata,
             files={k: _deepcopy(v) for k, v in self.files.items()},
         )
 
@@ -501,6 +449,14 @@ class Manifest:
 
     def write(self, path):
         self.writable_manifest().write(path)
+
+    def expect(self, unique_id: str) -> CompileResultNode:
+        if unique_id not in self.nodes:
+            # something terrible has happened
+            raise dbt.exceptions.InternalException(
+                'Expected node {} not found in manifest'.format(unique_id)
+            )
+        return self.nodes[unique_id]
 
 
 @dataclass

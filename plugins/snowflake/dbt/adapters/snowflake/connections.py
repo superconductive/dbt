@@ -35,7 +35,8 @@ class SnowflakeCredentials(Credentials):
         return 'snowflake'
 
     def _connection_keys(self):
-        return ('account', 'user', 'database', 'schema', 'warehouse', 'role')
+        return ('account', 'user', 'database', 'schema', 'warehouse', 'role',
+                'client_session_keep_alive')
 
     def auth_args(self):
         # Pull all of the optional authentication args for the connector,
@@ -91,7 +92,7 @@ class SnowflakeConnectionManager(SQLConnectionManager):
                 self.release()
                 raise dbt.exceptions.DatabaseException(msg)
         except Exception as e:
-            logger.debug("Error running SQL: %s", sql)
+            logger.debug("Error running SQL: {}", sql)
             logger.debug("Rolling back transaction.")
             self.release()
             if isinstance(e, dbt.exceptions.RuntimeException):
@@ -99,7 +100,7 @@ class SnowflakeConnectionManager(SQLConnectionManager):
                 # this sounds a lot like a signal handler and probably has
                 # useful information, so raise it without modification.
                 raise
-            raise dbt.exceptions.RuntimeException(e.msg)
+            raise dbt.exceptions.RuntimeException(str(e)) from e
 
     @classmethod
     def open(cls, connection):
@@ -240,6 +241,7 @@ class SnowflakeConnectionManager(SQLConnectionManager):
         """On snowflake, rolling back the handle of an aborted session raises
         an exception.
         """
+        logger.debug('initiating rollback')
         try:
             connection.handle.rollback()
         except snowflake.connector.errors.ProgrammingError as e:

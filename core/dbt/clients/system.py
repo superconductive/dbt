@@ -45,7 +45,8 @@ def find_matching(root_path,
             for local_file in local_files:
                 absolute_path = os.path.join(current_path, local_file)
                 relative_path = os.path.relpath(
-                    absolute_path, absolute_path_to_search)
+                    absolute_path, absolute_path_to_search
+                )
 
                 if fnmatch.fnmatch(local_file, file_pattern):
                     matching.append({

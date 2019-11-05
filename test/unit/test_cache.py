@@ -14,8 +14,7 @@ def make_relation(database, schema, identifier):
 
 def make_mock_relationship(database, schema, identifier):
     return BaseRelation.create(
-        database=database, schema=schema, identifier=identifier,
-        table_name=identifier, type='view'
+        database=database, schema=schema, identifier=identifier, type='view'
     )
 
 
@@ -83,16 +82,22 @@ class TestAddLink(TestCache):
         self.cache.add(make_relation('dbt', 'schema_2', 'bar'))
 
     def test_no_src(self):
-        # src does not exist (but similar names do)
-        with self.assertRaises(dbt.exceptions.InternalException):
-            self.cache.add_link(make_relation('dbt', 'schema', 'bar'),
-                                make_relation('dbt', 'schema', 'foo'))
+        self.assert_relations_exist('dbt', 'schema', 'foo')
+        self.assert_relations_do_not_exist('dbt', 'schema', 'bar')
+
+        self.cache.add_link(make_relation('dbt', 'schema', 'bar'),
+                            make_relation('dbt', 'schema', 'foo'))
+
+        self.assert_relations_exist('dbt', 'schema', 'foo', 'bar')
 
     def test_no_dst(self):
-        # dst does not exist (but similar names do)
-        with self.assertRaises(dbt.exceptions.InternalException):
-            self.cache.add_link(make_relation('dbt', 'schema', 'foo'),
-                                make_relation('dbt', 'schema', 'bar'))
+        self.assert_relations_exist('dbt', 'schema', 'foo')
+        self.assert_relations_do_not_exist('dbt', 'schema', 'bar')
+
+        self.cache.add_link(make_relation('dbt', 'schema', 'foo'),
+                            make_relation('dbt', 'schema', 'bar'))
+
+        self.assert_relations_exist('dbt', 'schema', 'foo', 'bar')
 
 
 class TestRename(TestCache):

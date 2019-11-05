@@ -1,30 +1,36 @@
-from dataclasses import dataclass, field
-from typing import Optional, Union, List, Dict, Any, Type, Tuple, NewType
+from dataclasses import dataclass, field, Field
+from typing import (
+    Optional,
+    Union,
+    List,
+    Dict,
+    Any,
+    Type,
+    Tuple,
+    NewType,
+    MutableMapping,
+    Callable,
+)
 
 from hologram import JsonSchemaMixin
 from hologram.helpers import (
-    StrEnum, register_pattern, ExtensibleJsonSchemaMixin
+    StrEnum, register_pattern
 )
 
-import dbt.clients.jinja
+from dbt.clients.jinja import MacroGenerator
 import dbt.flags
 from dbt.contracts.graph.unparsed import (
     UnparsedNode, UnparsedMacro, UnparsedDocumentationFile, Quoting,
-    UnparsedBaseNode, FreshnessThreshold
+    UnparsedBaseNode, FreshnessThreshold, ExternalTable,
+    AdditionalPropertiesAllowed
 )
-from dbt.contracts.util import Replaceable
+from dbt.contracts.util import Replaceable, list_str
 from dbt.logger import GLOBAL_LOGGER as logger  # noqa
-from dbt.node_types import (
-    NodeType, SourceType, SnapshotType, MacroType, TestType, OperationType,
-    SeedType, ModelType, AnalysisType, RPCCallType
-)
+from dbt.node_types import NodeType
 
 
-class TimestampStrategy(StrEnum):
+class SnapshotStrategy(StrEnum):
     Timestamp = 'timestamp'
-
-
-class CheckStrategy(StrEnum):
     Check = 'check'
 
 
@@ -53,7 +59,9 @@ register_pattern(Severity, insensitive_patterns('warn', 'error'))
 
 
 @dataclass
-class NodeConfig(ExtensibleJsonSchemaMixin, Replaceable):
+class NodeConfig(
+    AdditionalPropertiesAllowed, Replaceable, MutableMapping[str, Any]
+):
     enabled: bool = True
     materialized: str = 'view'
     persist_docs: Dict[str, Any] = field(default_factory=dict)
@@ -62,42 +70,57 @@ class NodeConfig(ExtensibleJsonSchemaMixin, Replaceable):
     vars: Dict[str, Any] = field(default_factory=dict)
     quoting: Dict[str, Any] = field(default_factory=dict)
     column_types: Dict[str, Any] = field(default_factory=dict)
-    tags: Union[List[str], str] = field(default_factory=list)
+    tags: Union[List[str], str] = field(default_factory=list_str)
     docs: Dict[str, Any] = field(default_factory=dict)
-    _extra: Dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def extra(self):
-        return self._extra
-
-    @classmethod
-    def from_dict(cls, data, validate=True):
-        self = super().from_dict(data=data, validate=validate)
-        keys = self.to_dict(validate=False, omit_none=False)
-        for key, value in data.items():
-            if key not in keys:
-                self._extra[key] = value
-        return self
-
-    def to_dict(self, omit_none=True, validate=False):
-        data = super().to_dict(omit_none=omit_none, validate=validate)
-        data.update(self._extra)
-        return data
-
-    def replace(self, **kwargs):
-        dct = self.to_dict(omit_none=False, validate=False)
-        dct.update(kwargs)
-        return self.from_dict(dct)
 
     @classmethod
     def field_mapping(cls):
         return {'post_hook': 'post-hook', 'pre_hook': 'pre-hook'}
+
+    # Implement MutableMapping so this config will behave as some macros expect
+    # during parsing (notably, syntax like `{{ node.config['schema'] }}`)
+
+    def __getitem__(self, key):
+        """Handle parse-time use of `config` as a dictionary, making the extra
+        values available during parsing.
+        """
+        if hasattr(self, key):
+            return getattr(self, key)
+        else:
+            return self._extra[key]
+
+    def __setitem__(self, key, value):
+        if hasattr(self, key):
+            setattr(self, key, value)
+        else:
+            self._extra[key] = value
+
+    def __delitem__(self, key):
+        if hasattr(self, key):
+            msg = (
+                'Error, tried to delete config key "{}": Cannot delete '
+                'built-in keys'
+            ).format(key)
+            raise dbt.exceptions.CompilationException(msg)
+        else:
+            del self._extra[key]
+
+    def __iter__(self):
+        for fld in self._get_fields():
+            yield fld.name
+
+        for key in self._extra:
+            yield key
+
+    def __len__(self):
+        return len(self._get_fields()) + len(self._extra)
 
 
 @dataclass
 class ColumnInfo(JsonSchemaMixin, Replaceable):
     name: str
     description: str = ''
+    data_type: Optional[str] = None
 
 
 # Docrefs are not quite like regular references, as they indicate what they
@@ -178,6 +201,10 @@ class ParsedNodeMandatory(
 ):
     alias: str
 
+    @property
+    def identifier(self):
+        return self.alias
+
 
 @dataclass
 class ParsedNodeDefaults(ParsedNodeMandatory):
@@ -201,28 +228,37 @@ class ParsedNode(ParsedNodeDefaults, ParsedNodeMixins):
 
 @dataclass
 class ParsedAnalysisNode(ParsedNode):
-    resource_type: AnalysisType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Analysis]})
 
 
 @dataclass
 class ParsedHookNode(ParsedNode):
-    resource_type: OperationType
+    resource_type: NodeType = field(
+        metadata={'restrict': [NodeType.Operation]}
+    )
     index: Optional[int] = None
 
 
 @dataclass
 class ParsedModelNode(ParsedNode):
-    resource_type: ModelType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Model]})
 
 
 @dataclass
 class ParsedRPCNode(ParsedNode):
-    resource_type: RPCCallType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.RPCCall]})
 
 
 @dataclass
 class ParsedSeedNode(ParsedNode):
-    resource_type: SeedType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Seed]})
+    seed_file_path: str = ''
+
+    def __post_init__(self):
+        if self.seed_file_path == '':
+            raise dbt.exceptions.InternalException(
+                'Seeds should always have a seed_file_path'
+            )
 
     @property
     def empty(self):
@@ -232,20 +268,28 @@ class ParsedSeedNode(ParsedNode):
 
 @dataclass
 class TestConfig(NodeConfig):
-    severity: Severity = 'error'
+    severity: Severity = Severity('error')
+
+
+@dataclass
+class TestMetadata(JsonSchemaMixin):
+    namespace: Optional[str]
+    name: str
+    kwargs: Dict[str, Any]
 
 
 @dataclass
 class ParsedTestNode(ParsedNode):
-    resource_type: TestType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Test]})
     column_name: Optional[str] = None
     config: TestConfig = field(default_factory=TestConfig)
+    test_metadata: Optional[TestMetadata] = None
 
 
 @dataclass(init=False)
 class _SnapshotConfig(NodeConfig):
-    unique_key: str
-    target_schema: str
+    unique_key: str = field(init=False, metadata=dict(init_required=True))
+    target_schema: str = field(init=False, metadata=dict(init_required=True))
     target_database: Optional[str] = None
 
     def __init__(
@@ -255,15 +299,30 @@ class _SnapshotConfig(NodeConfig):
         target_database: Optional[str] = None,
         **kwargs
     ) -> None:
-        self.target_database = target_database
-        self.target_schema = target_schema
         self.unique_key = unique_key
+        self.target_schema = target_schema
+        self.target_database = target_database
         super().__init__(**kwargs)
+
+    # type hacks...
+    @classmethod
+    def _get_fields(cls) -> List[Tuple[Field, str]]:  # type: ignore
+        fields: List[Tuple[Field, str]] = []
+        for old_field, name in super()._get_fields():
+            new_field = old_field
+            # tell hologram we're really an initvar
+            if old_field.metadata and old_field.metadata.get('init_required'):
+                new_field = field(init=True, metadata=old_field.metadata)
+                new_field.name = old_field.name
+                new_field.type = old_field.type
+                new_field._field_type = old_field._field_type  # type: ignore
+            fields.append((new_field, name))
+        return fields
 
 
 @dataclass(init=False)
 class GenericSnapshotConfig(_SnapshotConfig):
-    strategy: str
+    strategy: str = field(init=False, metadata=dict(init_required=True))
 
     def __init__(self, strategy: str, **kwargs) -> None:
         self.strategy = strategy
@@ -272,11 +331,17 @@ class GenericSnapshotConfig(_SnapshotConfig):
 
 @dataclass(init=False)
 class TimestampSnapshotConfig(_SnapshotConfig):
-    strategy: TimestampStrategy
-    updated_at: str
+    strategy: str = field(
+        init=False,
+        metadata=dict(
+            restrict=[str(SnapshotStrategy.Timestamp)],
+            init_required=True,
+        ),
+    )
+    updated_at: str = field(init=False, metadata=dict(init_required=True))
 
     def __init__(
-        self, strategy: TimestampStrategy, updated_at: str, **kwargs
+        self, strategy: str, updated_at: str, **kwargs
     ) -> None:
         self.strategy = strategy
         self.updated_at = updated_at
@@ -285,7 +350,13 @@ class TimestampSnapshotConfig(_SnapshotConfig):
 
 @dataclass(init=False)
 class CheckSnapshotConfig(_SnapshotConfig):
-    strategy: CheckStrategy
+    strategy: str = field(
+        init=False,
+        metadata=dict(
+            restrict=[str(SnapshotStrategy.Check)],
+            init_required=True,
+        ),
+    )
     # TODO: is there a way to get this to accept tuples of strings? Adding
     # `Tuple[str, ...]` to the list of types results in this:
     # ['email'] is valid under each of {'type': 'array', 'items':
@@ -293,10 +364,13 @@ class CheckSnapshotConfig(_SnapshotConfig):
     # but without it, parsing gets upset about values like `('email',)`
     # maybe hologram itself should support this behavior? It's not like tuples
     # are meaningful in json
-    check_cols: Union[All, List[str]]
+    check_cols: Union[All, List[str]] = field(
+        init=False,
+        metadata=dict(init_required=True),
+    )
 
     def __init__(
-        self, strategy: CheckStrategy, check_cols: Union[All, List[str]],
+        self, strategy: str, check_cols: Union[All, List[str]],
         **kwargs
     ) -> None:
         self.strategy = strategy
@@ -312,7 +386,7 @@ class IntermediateSnapshotNode(ParsedNode):
     # defined in config blocks. To fix that, we have an intermediate type that
     # uses a regular node config, which the snapshot parser will then convert
     # into a full ParsedSnapshotNode after rendering.
-    resource_type: SnapshotType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Snapshot]})
 
 
 def _create_if_else_chain(
@@ -324,7 +398,8 @@ def _create_if_else_chain(
     'if-then-else' chain. This results is much better/more consistent errors
     from jsonschema.
     """
-    result = schema = {}
+    schema: Dict[str, Any] = {}
+    result: Dict[str, Any] = {}
     criteria = criteria[:]
     while criteria:
         if_clause, then_clause = criteria.pop()
@@ -340,7 +415,7 @@ def _create_if_else_chain(
 
 @dataclass
 class ParsedSnapshotNode(ParsedNode):
-    resource_type: SnapshotType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Snapshot]})
     config: Union[
         CheckSnapshotConfig,
         TimestampSnapshotConfig,
@@ -353,8 +428,8 @@ class ParsedSnapshotNode(ParsedNode):
 
         # mess with config
         configs = [
-            (str(CheckStrategy.Check), CheckSnapshotConfig),
-            (str(TimestampStrategy.Timestamp), TimestampSnapshotConfig),
+            (str(SnapshotStrategy.Check), CheckSnapshotConfig),
+            (str(SnapshotStrategy.Timestamp), TimestampSnapshotConfig),
         ]
 
         if embeddable:
@@ -387,7 +462,7 @@ class MacroDependsOn(JsonSchemaMixin, Replaceable):
 @dataclass
 class ParsedMacro(UnparsedMacro, HasUniqueID):
     name: str
-    resource_type: MacroType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Macro]})
     # TODO: can macros even have tags?
     tags: List[str] = field(default_factory=list)
     # TODO: is this ever populated?
@@ -397,11 +472,11 @@ class ParsedMacro(UnparsedMacro, HasUniqueID):
         return {}
 
     @property
-    def generator(self):
+    def generator(self) -> Callable[[Dict[str, Any]], Callable]:
         """
         Returns a function that can be called to render the macro results.
         """
-        return dbt.clients.jinja.macro_generator(self)
+        return MacroGenerator(self)
 
 
 @dataclass
@@ -421,10 +496,11 @@ class ParsedSourceDefinition(
     source_description: str
     loader: str
     identifier: str
-    resource_type: SourceType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Source]})
     quoting: Quoting = field(default_factory=Quoting)
     loaded_at_field: Optional[str] = None
     freshness: Optional[FreshnessThreshold] = None
+    external: Optional[ExternalTable] = None
     docrefs: List[Docref] = field(default_factory=list)
     description: str = ''
     columns: Dict[str, ColumnInfo] = field(default_factory=dict)
@@ -454,7 +530,12 @@ class ParsedSourceDefinition(
         return bool(self.freshness) and self.loaded_at_field is not None
 
 
-PARSED_TYPES = {
+ParsedResource = Union[
+    ParsedMacro, ParsedNode, ParsedDocumentation, ParsedSourceDefinition
+]
+
+
+PARSED_TYPES: Dict[NodeType, Type[ParsedResource]] = {
     NodeType.Analysis: ParsedAnalysisNode,
     NodeType.Documentation: ParsedDocumentation,
     NodeType.Macro: ParsedMacro,

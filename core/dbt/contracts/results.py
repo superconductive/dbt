@@ -1,7 +1,12 @@
 from dbt.contracts.graph.manifest import CompileResultNode
 from dbt.contracts.graph.unparsed import Time, FreshnessStatus
 from dbt.contracts.graph.parsed import ParsedSourceDefinition
-from dbt.contracts.util import Writable
+from dbt.contracts.util import Writable, Replaceable
+from dbt.logger import (
+    TimingProcessor,
+    JsonOnly,
+    GLOBAL_LOGGER as logger,
+)
 from hologram.helpers import StrEnum
 from hologram import JsonSchemaMixin
 
@@ -9,7 +14,7 @@ import agate
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Union, Dict, List, Optional, Any
+from typing import Union, Dict, List, Optional, Any, NamedTuple
 from numbers import Real
 
 
@@ -27,7 +32,7 @@ class TimingInfo(JsonSchemaMixin):
 
 
 class collect_timing_info:
-    def __init__(self, name):
+    def __init__(self, name: str):
         self.timing_info = TimingInfo(name=name)
 
     def __enter__(self):
@@ -36,6 +41,8 @@ class collect_timing_info:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.timing_info.end()
+        with JsonOnly(), TimingProcessor(self.timing_info):
+            logger.debug('finished collecting timing info')
 
 
 @dataclass
@@ -77,6 +84,15 @@ class ExecutionResult(JsonSchemaMixin, Writable):
     generated_at: datetime
     elapsed_time: Real
 
+    def __len__(self):
+        return len(self.results)
+
+    def __iter__(self):
+        return iter(self.results)
+
+    def __getitem__(self, idx):
+        return self.results[idx]
+
 
 # due to issues with typing.Union collapsing subclasses, this can't subclass
 # PartialResult
@@ -95,6 +111,10 @@ class SourceFreshnessResult(JsonSchemaMixin, Writable):
 
     def __post_init__(self):
         self.fail = self.status == 'error'
+
+    @property
+    def warned(self):
+        return self.status == 'warn'
 
     @property
     def skipped(self):
@@ -137,6 +157,15 @@ class FreshnessExecutionResult(FreshnessMetadata):
         output = FreshnessRunOutput(meta=meta, sources=sources)
         output.write(path, omit_none=omit_none)
 
+    def __len__(self):
+        return len(self.results)
+
+    def __iter__(self):
+        return iter(self.results)
+
+    def __getitem__(self, idx):
+        return self.results[idx]
+
 
 def _copykeys(src, keys, **updates):
     return {k: getattr(src, k) for k in keys}
@@ -177,24 +206,65 @@ class FreshnessRunOutput(JsonSchemaMixin, Writable):
     sources: Dict[str, SourceFreshnessRunResult]
 
 
-@dataclass
-class RemoteCompileResult(JsonSchemaMixin):
-    raw_sql: str
-    compiled_sql: str
-    node: CompileResultNode
-    timing: List[TimingInfo]
+Primitive = Union[bool, str, float, None]
 
-    @property
-    def error(self):
-        return None
+CatalogKey = NamedTuple(
+    'CatalogKey',
+    [('database', str), ('schema', str), ('name', str)]
+)
 
 
 @dataclass
-class ResultTable(JsonSchemaMixin):
-    column_names: List[str]
-    rows: List[Any]
+class StatsItem(JsonSchemaMixin):
+    id: str
+    label: str
+    value: Primitive
+    description: str
+    include: bool
+
+
+StatsDict = Dict[str, StatsItem]
 
 
 @dataclass
-class RemoteRunResult(RemoteCompileResult):
-    table: ResultTable
+class ColumnMetadata(JsonSchemaMixin):
+    type: str
+    comment: Optional[str]
+    index: int
+    name: str
+
+
+ColumnMap = Dict[str, ColumnMetadata]
+
+
+@dataclass
+class TableMetadata(JsonSchemaMixin):
+    type: str
+    database: str
+    schema: str
+    name: str
+    comment: Optional[str]
+    owner: Optional[str]
+
+
+@dataclass
+class CatalogTable(JsonSchemaMixin, Replaceable):
+    metadata: TableMetadata
+    columns: ColumnMap
+    stats: StatsDict
+    # the same table with two unique IDs will just be listed two times
+    unique_id: Optional[str] = None
+
+    def key(self) -> CatalogKey:
+        return CatalogKey(
+            self.metadata.database.lower(),
+            self.metadata.schema.lower(),
+            self.metadata.name.lower(),
+        )
+
+
+@dataclass
+class CatalogResults(JsonSchemaMixin, Writable):
+    nodes: Dict[str, CatalogTable]
+    generated_at: datetime
+    _compile_results: Optional[Any] = None

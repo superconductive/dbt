@@ -31,7 +31,8 @@ class PostgresCredentials(Credentials):
         return 'postgres'
 
     def _connection_keys(self):
-        return ('host', 'port', 'user', 'database', 'schema', 'search_path')
+        return ('host', 'port', 'user', 'database', 'schema', 'search_path',
+                'keepalives_idle')
 
 
 class PostgresConnectionManager(SQLConnectionManager):
@@ -52,10 +53,10 @@ class PostgresConnectionManager(SQLConnectionManager):
                 logger.debug("Failed to release connection!")
                 pass
 
-            raise dbt.exceptions.DatabaseException(str(e).strip())
+            raise dbt.exceptions.DatabaseException(str(e).strip()) from e
 
         except Exception as e:
-            logger.debug("Error running SQL: %s", sql)
+            logger.debug("Error running SQL: {}", sql)
             logger.debug("Rolling back transaction.")
             self.release()
             if isinstance(e, dbt.exceptions.RuntimeException):
@@ -64,7 +65,7 @@ class PostgresConnectionManager(SQLConnectionManager):
                 # useful information, so raise it without modification.
                 raise
 
-            raise dbt.exceptions.RuntimeException(e)
+            raise dbt.exceptions.RuntimeException(e) from e
 
     @classmethod
     def open(cls, connection):

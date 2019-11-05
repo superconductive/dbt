@@ -1,9 +1,7 @@
 import os
-import pprint
 
 from hologram import ValidationError
 
-from dbt.adapters.factory import load_plugin
 from dbt.clients.system import load_file_contents
 from dbt.clients.yaml_helper import load_yaml_text
 from dbt.contracts.project import ProfileConfig, UserConfig
@@ -20,7 +18,7 @@ from .renderer import ConfigRenderer
 DEFAULT_THREADS = 1
 DEFAULT_PROFILES_DIR = os.path.join(os.path.expanduser('~'), '.dbt')
 PROFILES_DIR = os.path.expanduser(
-    os.environ.get('DBT_PROFILES_DIR', DEFAULT_PROFILES_DIR)
+    os.getenv('DBT_PROFILES_DIR', DEFAULT_PROFILES_DIR)
 )
 
 INVALID_PROFILE_MESSAGE = """
@@ -102,7 +100,7 @@ class Profile:
         return result
 
     def __str__(self):
-        return pprint.pformat(self.to_profile_info())
+        return str(self.to_profile_info())
 
     def __eq__(self, other):
         if not (isinstance(other, self.__class__) and
@@ -122,6 +120,8 @@ class Profile:
 
     @staticmethod
     def _credentials_from_profile(profile, profile_name, target_name):
+        # avoid an import cycle
+        from dbt.adapters.factory import load_plugin
         # credentials carry their 'type' in their actual type, not their
         # attributes. We do want this in order to pick our Credentials class.
         if 'type' not in profile:
@@ -130,7 +130,6 @@ class Profile:
                 .format(profile_name, target_name))
 
         typename = profile.pop('type')
-
         try:
             cls = load_plugin(typename)
             credentials = cls.from_dict(profile)
@@ -256,7 +255,10 @@ class Profile:
             target could not be found
         :returns Profile: The new Profile object.
         """
-        # user_cfg is not rendered since it only contains booleans.
+        # user_cfg is not rendered.
+        if user_cfg is None:
+            user_cfg = raw_profile.get('config')
+
         # TODO: should it be, and the values coerced to bool?
         target_name, profile_data = cls.render_profile(
             raw_profile, profile_name, target_override, cli_vars

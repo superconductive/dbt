@@ -6,14 +6,13 @@ import dbt.utils
 import dbt.include
 import dbt.tracking
 
-from dbt.utils import get_materialization, NodeType, is_type
+from dbt.node_types import NodeType
 from dbt.linker import Linker
 
 import dbt.context.runtime
 import dbt.contracts.project
 import dbt.exceptions
 import dbt.flags
-import dbt.loader
 import dbt.config
 from dbt.contracts.graph.compiled import InjectedCTE, COMPILED_TYPES
 from dbt.contracts.graph.parsed import ParsedNode
@@ -50,7 +49,7 @@ def print_compile_stats(stats):
     stat_line = ", ".join(
         [dbt.utils.pluralize(ct, names.get(t)) for t, ct in results.items()])
 
-    logger.notice("Found {}".format(stat_line))
+    logger.info("Found {}".format(stat_line))
 
 
 def _add_prepended_cte(prepended_ctes, new_cte):
@@ -77,8 +76,10 @@ def recursively_prepend_ctes(model, manifest):
         return (model, model.extra_ctes, manifest)
 
     if dbt.flags.STRICT_MODE:
-        assert isinstance(model, tuple(COMPILED_TYPES.values())), \
-            'Bad model type: {}'.format(type(model))
+        if not isinstance(model, tuple(COMPILED_TYPES.values())):
+            raise dbt.exceptions.InternalException(
+                'Bad model type: {}'.format(type(model))
+            )
 
     prepended_ctes = []
 
@@ -141,7 +142,7 @@ class Compiler:
             # data tests get wrapped in count(*)
             # TODO : move this somewhere more reasonable
             if 'data' in injected_node.tags and \
-               is_type(injected_node, NodeType.Test):
+               injected_node.resource_type == NodeType.Test:
                 injected_node.wrapped_sql = (
                     "select count(*) as errors "
                     "from (\n{test_sql}\n) sbq").format(
@@ -150,14 +151,14 @@ class Compiler:
                 # don't wrap schema tests or analyses.
                 injected_node.wrapped_sql = injected_node.injected_sql
 
-        elif is_type(injected_node, NodeType.Snapshot):
+        elif injected_node.resource_type == NodeType.Snapshot:
             # unfortunately we do everything automagically for
             # snapshots. in the future it'd be nice to generate
             # the SQL at the parser level.
             pass
 
-        elif(is_type(injected_node, NodeType.Model) and
-             get_materialization(injected_node) == 'ephemeral'):
+        elif(injected_node.resource_type == NodeType.Model and
+             injected_node.get_materialization() == 'ephemeral'):
             pass
 
         else:
@@ -220,7 +221,7 @@ def _is_writable(node):
     if not node.injected_sql:
         return False
 
-    if dbt.utils.is_type(node, NodeType.Snapshot):
+    if node.resource_type == NodeType.Snapshot:
         return False
 
     return True

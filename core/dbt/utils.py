@@ -8,7 +8,7 @@ import itertools
 import json
 import os
 from enum import Enum
-from typing import Tuple, Type, Any
+from typing import Tuple, Type, Any, Optional, TypeVar, Dict
 
 import dbt.exceptions
 
@@ -300,12 +300,6 @@ def is_enabled(node):
     return node.config.enabled
 
 
-def is_type(node, _type):
-    if hasattr(_type, 'value'):
-        _type = _type.value
-    return node.resource_type == _type
-
-
 def get_pseudo_test_path(node_name, source_path, test_type):
     "schema tests all come from schema.yml files. fake a source sql file"
     source_path_parts = split_path(source_path)
@@ -390,7 +384,7 @@ def invalid_ref_test_message(node, target_model_name, target_model_package,
 
 def invalid_ref_fail_unless_test(node, target_model_name,
                                  target_model_package, disabled):
-    if is_type(node, NodeType.Test):
+    if node.resource_type == NodeType.Test:
         msg = invalid_ref_test_message(node, target_model_name,
                                        target_model_package, disabled)
         if disabled:
@@ -406,7 +400,7 @@ def invalid_ref_fail_unless_test(node, target_model_name,
 
 
 def invalid_source_fail_unless_test(node, target_name, target_table_name):
-    if is_type(node, NodeType.Test):
+    if node.resource_type == NodeType.Test:
         msg = dbt.exceptions.source_disabled_message(node, target_name,
                                                      target_table_name)
         dbt.exceptions.warn_or_error(msg, log_fmt='WARNING: {}')
@@ -433,16 +427,19 @@ def parse_cli_vars(var_string):
         raise
 
 
-def filter_null_values(input):
-    return dict((k, v) for (k, v) in input.items()
-                if v is not None)
+K_T = TypeVar('K_T')
+V_T = TypeVar('V_T')
 
 
-def add_ephemeral_model_prefix(s):
+def filter_null_values(input: Dict[K_T, Optional[V_T]]) -> Dict[K_T, V_T]:
+    return {k: v for k, v in input.items() if v is not None}
+
+
+def add_ephemeral_model_prefix(s: str) -> str:
     return '__dbt__CTE__{}'.format(s)
 
 
-def timestring():
+def timestring() -> str:
     """Get the current datetime as an RFC 3339-compliant string"""
     # isoformat doesn't include the mandatory trailing 'Z' for UTC.
     return datetime.datetime.utcnow().isoformat() + 'Z'
@@ -458,8 +455,21 @@ class JSONEncoder(json.JSONEncoder):
             return float(obj)
         if isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
             return obj.isoformat()
-
+        if hasattr(obj, 'to_dict'):
+            # if we have a to_dict we should try to serialize the result of
+            # that!
+            obj = obj.to_dict()
         return super().default(obj)
+
+
+class ForgivingJSONEncoder(JSONEncoder):
+    def default(self, obj):
+        # let dbt's default JSON encoder handle it if possible, fallback to
+        # str()
+        try:
+            return super().default(obj)
+        except TypeError:
+            return str(obj)
 
 
 def translate_aliases(kwargs, aliases):
@@ -494,3 +504,30 @@ def pluralize(count, string):
         return "{} {}".format(count, string)
     else:
         return "{} {}s".format(count, string)
+
+
+def env_set_truthy(key: str) -> Optional[str]:
+    """Return the value if it was set to a "truthy" string value, or None
+    otherwise.
+    """
+    value = os.getenv(key)
+    if not value or value.lower() in ('0', 'false', 'f'):
+        return None
+    return value
+
+
+def restrict_to(*restrictions):
+    """Create the metadata for a restricted dataclass field"""
+    return {'restrict': list(restrictions)}
+
+
+# some types need to make constants available to the jinja context as
+# attributes, and regular properties only work with objects. maybe this should
+# be handled by the RelationProxy?
+
+class classproperty(object):
+    def __init__(self, func):
+        self.func = func
+
+    def __get__(self, obj, objtype):
+        return self.func(objtype)

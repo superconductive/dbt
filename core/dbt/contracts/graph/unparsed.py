@@ -1,8 +1,9 @@
-from dbt.node_types import UnparsedNodeType, NodeType, OperationType, MacroType
+from dbt.node_types import NodeType
 from dbt.contracts.util import Replaceable, Mergeable
+from dbt.exceptions import CompilationException
 
 from hologram import JsonSchemaMixin
-from hologram.helpers import StrEnum
+from hologram.helpers import StrEnum, ExtensibleJsonSchemaMixin
 
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -28,18 +29,28 @@ class HasSQL:
 
 @dataclass
 class UnparsedMacro(UnparsedBaseNode, HasSQL):
-    resource_type: MacroType
+    resource_type: NodeType = field(metadata={'restrict': [NodeType.Macro]})
 
 
 @dataclass
 class UnparsedNode(UnparsedBaseNode, HasSQL):
     name: str
-    resource_type: UnparsedNodeType
+    resource_type: NodeType = field(metadata={'restrict': [
+        NodeType.Model,
+        NodeType.Analysis,
+        NodeType.Test,
+        NodeType.Snapshot,
+        NodeType.Operation,
+        NodeType.Seed,
+        NodeType.RPCCall,
+    ]})
 
 
 @dataclass
 class UnparsedRunHook(UnparsedNode):
-    resource_type: OperationType
+    resource_type: NodeType = field(
+        metadata={'restrict': [NodeType.Operation]}
+    )
     index: Optional[int] = None
 
 
@@ -47,6 +58,7 @@ class UnparsedRunHook(UnparsedNode):
 class NamedTested(JsonSchemaMixin, Replaceable):
     name: str
     description: str = ''
+    data_type: Optional[str] = None
     tests: Optional[List[Union[Dict[str, Any], str]]] = None
 
     def __post_init__(self):
@@ -56,11 +68,7 @@ class NamedTested(JsonSchemaMixin, Replaceable):
 
 @dataclass
 class ColumnDescription(JsonSchemaMixin, Replaceable):
-    columns: Optional[List[NamedTested]] = field(default_factory=list)
-
-    def __post_init__(self):
-        if self.columns is None:
-            self.columns = []
+    columns: List[NamedTested] = field(default_factory=list)
 
 
 @dataclass
@@ -72,7 +80,6 @@ class NodeDescription(NamedTested):
 class UnparsedNodeUpdate(ColumnDescription, NodeDescription):
     def __post_init__(self):
         NodeDescription.__post_init__(self)
-        ColumnDescription.__post_init__(self)
 
 
 class TimePeriod(StrEnum):
@@ -105,6 +112,7 @@ class FreshnessStatus(StrEnum):
 class FreshnessThreshold(JsonSchemaMixin, Mergeable):
     warn_after: Optional[Time] = None
     error_after: Optional[Time] = None
+    filter: Optional[str] = None
 
     def status(self, age: float) -> FreshnessStatus:
         if self.error_after and self.error_after.exceeded(age):
@@ -116,6 +124,59 @@ class FreshnessThreshold(JsonSchemaMixin, Mergeable):
 
     def __bool__(self):
         return self.warn_after is not None or self.error_after is not None
+
+
+@dataclass
+class AdditionalPropertiesAllowed(ExtensibleJsonSchemaMixin):
+    _extra: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def extra(self):
+        return self._extra
+
+    @classmethod
+    def from_dict(cls, data, validate=True):
+        self = super().from_dict(data=data, validate=validate)
+        keys = self.to_dict(validate=False, omit_none=False)
+        for key, value in data.items():
+            if key not in keys:
+                self._extra[key] = value
+        return self
+
+    def to_dict(self, omit_none=True, validate=False):
+        data = super().to_dict(omit_none=omit_none, validate=validate)
+        data.update(self._extra)
+        return data
+
+    def replace(self, **kwargs):
+        dct = self.to_dict(omit_none=False, validate=False)
+        dct.update(kwargs)
+        return self.from_dict(dct)
+
+
+@dataclass
+class ExternalPartition(AdditionalPropertiesAllowed, Replaceable):
+    name: str = ''
+    description: str = ''
+    data_type: str = ''
+
+    def __post_init__(self):
+        if self.name == '' or self.data_type == '':
+            raise CompilationException(
+                'External partition columns must have names and data types'
+            )
+
+
+@dataclass
+class ExternalTable(AdditionalPropertiesAllowed, Mergeable):
+    location: Optional[str] = None
+    file_format: Optional[str] = None
+    row_format: Optional[str] = None
+    tbl_properties: Optional[str] = None
+    partitions: Optional[List[ExternalPartition]] = None
+
+    def __bool__(self):
+        return self.location is not None
 
 
 @dataclass
@@ -133,10 +194,12 @@ class UnparsedSourceTableDefinition(ColumnDescription, NodeDescription):
     freshness: Optional[FreshnessThreshold] = field(
         default_factory=FreshnessThreshold
     )
+    external: Optional[ExternalTable] = field(
+        default_factory=ExternalTable
+    )
 
     def __post_init__(self):
         NodeDescription.__post_init__(self)
-        ColumnDescription.__post_init__(self)
 
 
 @dataclass

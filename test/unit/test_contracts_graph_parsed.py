@@ -4,8 +4,8 @@ from dbt.node_types import NodeType
 from dbt.contracts.graph.parsed import (
     ParsedModelNode, DependsOn, NodeConfig, ColumnInfo, Hook, ParsedTestNode,
     TestConfig, ParsedSnapshotNode, TimestampSnapshotConfig, All, Docref,
-    GenericSnapshotConfig, CheckSnapshotConfig, TimestampStrategy,
-    CheckStrategy, IntermediateSnapshotNode, ParsedNodePatch, ParsedMacro,
+    GenericSnapshotConfig, CheckSnapshotConfig, SnapshotStrategy,
+    IntermediateSnapshotNode, ParsedNodePatch, ParsedMacro,
     MacroDependsOn, ParsedSourceDefinition, ParsedDocumentation, ParsedHookNode
 )
 from dbt.contracts.graph.unparsed import Quoting, FreshnessThreshold
@@ -888,7 +888,7 @@ class TestTimestampSnapshotConfig(ContractTestCase):
             'target_schema': 'some_snapshot_schema',
         }
         cfg = self.ContractType(
-            strategy=TimestampStrategy.Timestamp,
+            strategy=SnapshotStrategy.Timestamp,
             updated_at='last_update',
             unique_key='id',
             target_database='some_snapshot_db',
@@ -920,7 +920,7 @@ class TestTimestampSnapshotConfig(ContractTestCase):
             column_types={'a': 'text'},
             materialized='table',
             post_hook=[Hook(sql='insert into blah(a, b) select "1", 1')],
-            strategy=TimestampStrategy.Timestamp,
+            strategy=SnapshotStrategy.Timestamp,
             target_database='some_snapshot_db',
             target_schema='some_snapshot_schema',
             updated_at='last_update',
@@ -991,7 +991,7 @@ class TestCheckSnapshotConfig(ContractTestCase):
             'check_cols': 'all',
         }
         cfg = self.ContractType(
-            strategy=CheckStrategy.Check,
+            strategy=SnapshotStrategy.Check,
             check_cols=All.All,
             unique_key='id',
             target_database='some_snapshot_db',
@@ -1023,7 +1023,7 @@ class TestCheckSnapshotConfig(ContractTestCase):
             column_types={'a': 'text'},
             materialized='table',
             post_hook=[Hook(sql='insert into blah(a, b) select "1", 1')],
-            strategy=CheckStrategy.Check,
+            strategy=SnapshotStrategy.Check,
             check_cols=['a', 'b'],
             target_database='some_snapshot_db',
             target_schema='some_snapshot_schema',
@@ -1091,38 +1091,6 @@ class TestCheckSnapshotConfig(ContractTestCase):
         self.assert_fails_validation(invalid_check_type)
 
 
-class TestGenericSnapshotConfig(ContractTestCase):
-    ContractType = GenericSnapshotConfig
-
-    def test_ok(self):
-        cfg_dict = {
-            'column_types': {},
-            'enabled': True,
-            'materialized': 'view',
-            'persist_docs': {},
-            'post-hook': [],
-            'pre-hook': [],
-            'quoting': {},
-            'tags': [],
-            'docs':{},
-            'vars': {},
-            'unique_key': 'id',
-            'strategy': 'hello',
-            'target_database': 'some_snapshot_db',
-            'target_schema': 'some_snapshot_schema',
-            'magic_key': 'magic',
-        }
-        cfg = self.ContractType(
-            strategy='hello',
-            unique_key='id',
-            target_database='some_snapshot_db',
-            target_schema='some_snapshot_schema',
-        )
-        cfg._extra.update({'magic_key': 'magic'})
-        self.assert_symmetric(cfg, cfg_dict)
-        pickle.loads(pickle.dumps(cfg))
-
-
 class TestParsedSnapshotNode(ContractTestCase):
     ContractType = ParsedSnapshotNode
 
@@ -1186,7 +1154,7 @@ class TestParsedSnapshotNode(ContractTestCase):
             alias='bar',
             tags=[],
             config=TimestampSnapshotConfig(
-                strategy=TimestampStrategy.Timestamp,
+                strategy=SnapshotStrategy.Timestamp,
                 unique_key='id',
                 updated_at='last_update',
                 target_database='some_snapshot_db',
@@ -1293,7 +1261,7 @@ class TestParsedSnapshotNode(ContractTestCase):
             alias='bar',
             tags=[],
             config=CheckSnapshotConfig(
-                strategy=CheckStrategy.Check,
+                strategy=SnapshotStrategy.Check,
                 unique_key='id',
                 check_cols=All.All,
                 target_database='some_snapshot_db',
@@ -1337,76 +1305,6 @@ class TestParsedSnapshotNode(ContractTestCase):
         )
         self.assertTrue(node.is_refable)
         self.assertFalse(node.is_ephemeral)
-
-    def test_ok_unknown_strategy(self):
-        unknown_strategy = {
-            'name': 'foo',
-            'root_path': '/root/',
-            'resource_type': str(NodeType.Snapshot),
-            'path': '/root/x/path.sql',
-            'original_file_path': '/root/path.sql',
-            'package_name': 'test',
-            'raw_sql': 'select * from wherever',
-            'unique_id': 'model.test.foo',
-            'fqn': ['test', 'models', 'foo'],
-            'refs': [],
-            'sources': [],
-            'depends_on': {'macros': [], 'nodes': []},
-            'database': 'test_db',
-            'description': '',
-            'schema': 'test_schema',
-            'alias': 'bar',
-            'tags': [],
-            'docs':{},
-            'config': {
-                'column_types': {},
-                'enabled': True,
-                'materialized': 'view',
-                'persist_docs': {},
-                'post-hook': [],
-                'pre-hook': [],
-                'quoting': {},
-                'tags': [],
-                'docs':{},
-                'vars': {},
-                'target_database': 'some_snapshot_db',
-                'target_schema': 'some_snapshot_schema',
-                'unique_key': 'id',
-                'strategy': 'unknown',
-                'magic_key': 'something',
-            },
-            'docrefs': [],
-            'columns': {},
-        }
-        config = GenericSnapshotConfig(
-                strategy='unknown',
-                unique_key='id',
-                target_database='some_snapshot_db',
-                target_schema='some_snapshot_schema',
-        )
-        config._extra.update({'magic_key': 'something'})
-
-        node = self.ContractType(
-            package_name='test',
-            root_path='/root/',
-            path='/root/x/path.sql',
-            original_file_path='/root/path.sql',
-            raw_sql='select * from wherever',
-            name='foo',
-            resource_type=NodeType.Snapshot,
-            unique_id='model.test.foo',
-            fqn=['test', 'models', 'foo'],
-            refs=[],
-            sources=[],
-            depends_on=DependsOn(),
-            description='',
-            database='test_db',
-            schema='test_schema',
-            alias='bar',
-            tags=[],
-            config=config,
-        )
-        self.assert_symmetric(node, unknown_strategy)
 
     def test_invalid_bad_resource_type(self):
         bad_resource_type = {

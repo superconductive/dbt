@@ -45,7 +45,8 @@ class BigQueryCredentials(Credentials):
         return 'bigquery'
 
     def _connection_keys(self):
-        return ('method', 'database', 'schema', 'location')
+        return ('method', 'database', 'schema', 'location', 'priority',
+                'timeout_seconds')
 
 
 class BigQueryConnectionManager(BaseConnectionManager):
@@ -60,11 +61,11 @@ class BigQueryConnectionManager(BaseConnectionManager):
     @classmethod
     def handle_error(cls, error, message, sql):
         logger.debug(message.format(sql=sql))
-        logger.debug(error)
+        logger.debug(str(error))
         error_msg = "\n".join(
             [item['message'] for item in error.errors])
 
-        raise dbt.exceptions.DatabaseException(error_msg)
+        raise dbt.exceptions.DatabaseException(error_msg) from error
 
     def clear_transaction(self):
         pass
@@ -90,9 +91,9 @@ class BigQueryConnectionManager(BaseConnectionManager):
                 # this sounds a lot like a signal handler and probably has
                 # useful information, so raise it without modification.
                 raise
-            raise dbt.exceptions.RuntimeException(str(e))
+            raise dbt.exceptions.RuntimeException(str(e)) from e
 
-    def cancel_open(self):
+    def cancel_open(self) -> None:
         pass
 
     @classmethod
@@ -179,7 +180,7 @@ class BigQueryConnectionManager(BaseConnectionManager):
         conn = self.get_thread_connection()
         client = conn.handle
 
-        logger.debug('On %s: %s', conn.name, sql)
+        logger.debug('On {}: {}', conn.name, sql)
 
         job_config = google.cloud.bigquery.QueryJobConfig()
         job_config.use_legacy_sql = False
@@ -200,6 +201,7 @@ class BigQueryConnectionManager(BaseConnectionManager):
         return query_job, iterator
 
     def execute(self, sql, auto_begin=False, fetch=None):
+        sql = self._add_query_comment(sql)
         # auto_begin is ignored on bigquery, and only included for consistency
         query_job, iterator = self.raw_execute(sql, fetch=fetch)
 
@@ -294,21 +296,14 @@ class BigQueryConnectionManager(BaseConnectionManager):
         client = conn.handle
 
         with self.exception_handler('drop dataset'):
-            for table in client.list_tables(dataset):
-                client.delete_table(table.reference)
-            client.delete_dataset(dataset)
+            client.delete_dataset(
+                dataset, delete_contents=True, not_found_ok=True
+            )
 
     def create_dataset(self, database, schema):
         conn = self.get_thread_connection()
         client = conn.handle
         dataset = self.dataset(database, schema, conn)
 
-        # Emulate 'create schema if not exists ...'
-        try:
-            client.get_dataset(dataset)
-            return
-        except google.api_core.exceptions.NotFound:
-            pass
-
         with self.exception_handler('create dataset'):
-            client.create_dataset(dataset)
+            client.create_dataset(dataset, exists_ok=True)

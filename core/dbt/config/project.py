@@ -1,7 +1,6 @@
 from copy import deepcopy
 import hashlib
 import os
-import pprint
 
 from dbt.clients.system import resolve_path_from_base
 from dbt.clients.system import path_exists
@@ -12,6 +11,7 @@ from dbt.exceptions import RecursionException
 from dbt.exceptions import SemverException
 from dbt.exceptions import validator_error_message
 from dbt.exceptions import warn_or_error
+from dbt.helper_types import NoValue
 from dbt.semver import VersionSpecifier
 from dbt.semver import versions_compatible
 from dbt.version import get_installed_version
@@ -20,6 +20,7 @@ from dbt.utils import deep_map
 from dbt.utils import parse_cli_vars
 from dbt.source_config import SourceConfig
 
+from dbt.contracts.graph.manifest import ManifestMetadata
 from dbt.contracts.project import Project as ProjectContract
 from dbt.contracts.project import PackageConfig
 
@@ -148,7 +149,8 @@ class Project:
                  source_paths, macro_paths, data_paths, test_paths,
                  analysis_paths, docs_paths, target_path, snapshot_paths,
                  clean_targets, log_path, modules_path, quoting, models,
-                 on_run_start, on_run_end, seeds, dbt_version, packages):
+                 on_run_start, on_run_end, seeds, snapshots, dbt_version,
+                 packages, query_comment):
         self.project_name = project_name
         self.version = version
         self.project_root = project_root
@@ -169,8 +171,10 @@ class Project:
         self.on_run_start = on_run_start
         self.on_run_end = on_run_end
         self.seeds = seeds
+        self.snapshots = snapshots
         self.dbt_version = dbt_version
         self.packages = packages
+        self.query_comment = query_comment
 
     @staticmethod
     def _preprocess(project_dict):
@@ -182,7 +186,7 @@ class Project:
             ('on-run-end',): _list_if_none_or_string,
         }
 
-        for k in ('models', 'seeds'):
+        for k in ('models', 'seeds', 'snapshots'):
             handlers[(k,)] = _dict_if_none
             handlers[(k, 'vars')] = _dict_if_none
             handlers[(k, 'pre-hook')] = _list_if_none_or_string
@@ -253,7 +257,9 @@ class Project:
         on_run_start = project_dict.get('on-run-start', [])
         on_run_end = project_dict.get('on-run-end', [])
         seeds = project_dict.get('seeds', {})
+        snapshots = project_dict.get('snapshots', {})
         dbt_raw_version = project_dict.get('require-dbt-version', '>=0.0.0')
+        query_comment = project_dict.get('query-comment', NoValue())
 
         try:
             dbt_version = _parse_versions(dbt_raw_version)
@@ -286,8 +292,10 @@ class Project:
             on_run_start=on_run_start,
             on_run_end=on_run_end,
             seeds=seeds,
+            snapshots=snapshots,
             dbt_version=dbt_version,
-            packages=packages
+            packages=packages,
+            query_comment=query_comment,
         )
         # sanity check - this means an internal issue
         project.validate()
@@ -295,7 +303,7 @@ class Project:
 
     def __str__(self):
         cfg = self.to_project_config(with_packages=True)
-        return pprint.pformat(cfg)
+        return str(cfg)
 
     def __eq__(self, other):
         if not (isinstance(other, self.__class__) and
@@ -332,12 +340,16 @@ class Project:
             'on-run-start': self.on_run_start,
             'on-run-end': self.on_run_end,
             'seeds': self.seeds,
+            'snapshots': self.snapshots,
             'require-dbt-version': [
                 v.to_version_string() for v in self.dbt_version
             ],
         })
         if with_packages:
             result.update(self.packages.to_dict())
+        if self.query_comment != NoValue():
+            result['query-comment'] = self.query_comment
+
         return result
 
     def validate(self):
@@ -395,6 +407,7 @@ class Project:
         return {
             'models': _get_config_paths(self.models),
             'seeds': _get_config_paths(self.seeds),
+            'snapshots': _get_config_paths(self.snapshots),
         }
 
     def get_unused_resource_config_paths(self, resource_fqns, disabled):
@@ -448,3 +461,6 @@ class Project:
                 ]
             )
             raise DbtProjectError(msg)
+
+    def get_metadata(self) -> ManifestMetadata:
+        return ManifestMetadata(self.hashed_name())

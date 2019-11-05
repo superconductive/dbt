@@ -1,10 +1,9 @@
 import functools
 import time
-from typing import Union, List, Dict, Any
 
-from dbt.logger import GLOBAL_LOGGER as logger
+from dbt.logger import GLOBAL_LOGGER as logger, TextOnly
 from dbt.node_types import NodeType, RunHookType
-from dbt.node_runners import ModelRunner, RPCExecuteRunner
+from dbt.node_runners import ModelRunner
 
 import dbt.exceptions
 import dbt.flags
@@ -17,8 +16,7 @@ from dbt.ui.printer import \
     get_counts
 
 from dbt.compilation import compile_node
-from dbt.task.compile import CompileTask, RemoteCompileTask
-from dbt.task.runnable import RemoteCallable
+from dbt.task.compile import CompileTask
 from dbt.utils import get_nodes_by_tags
 
 
@@ -94,7 +92,8 @@ class RunTask(CompileTask):
         num_hooks = len(ordered_hooks)
 
         plural = 'hook' if num_hooks == 1 else 'hooks'
-        print_timestamped_line("")
+        with TextOnly():
+            print_timestamped_line("")
         print_timestamped_line(
             'Running {} {} {}'.format(num_hooks, hook_type, plural)
         )
@@ -117,7 +116,8 @@ class RunTask(CompileTask):
             print_hook_end_line(hook_text, status, idx, num_hooks,
                                 timer.elapsed)
 
-        print_timestamped_line("")
+        with TextOnly():
+            print_timestamped_line("")
 
     def safe_run_hooks(self, adapter, hook_type, extra_context):
         try:
@@ -136,7 +136,8 @@ class RunTask(CompileTask):
             execution = " in {execution_time:0.2f}s".format(
                 execution_time=execution_time)
 
-        print_timestamped_line("")
+        with TextOnly():
+            print_timestamped_line("")
         print_timestamped_line(
             "Finished running {stat_line}{execution}."
             .format(stat_line=stat_line, execution=execution))
@@ -176,33 +177,3 @@ class RunTask(CompileTask):
     def task_end_messages(self, results):
         if results:
             print_run_end_messages(results)
-
-
-class RemoteRunTask(RemoteCompileTask, RunTask):
-    METHOD_NAME = 'run'
-
-    def get_runner_type(self):
-        return RPCExecuteRunner
-
-
-class RemoteRunProjectTask(RunTask, RemoteCallable):
-    METHOD_NAME = 'run_project'
-
-    def __init__(self, args, config, manifest):
-        super().__init__(args, config)
-        self.manifest = manifest.deepcopy(config=config)
-
-    def load_manifest(self):
-        # we started out with a manifest!
-        pass
-
-    def handle_request(
-        self,
-        models: Union[None, str, List[str]] = None,
-        exclude: Union[None, str, List[str]] = None,
-    ) -> Dict[str, List[Any]]:
-        self.args.models = self._listify(models)
-        self.args.exclude = self._listify(exclude)
-
-        results = self.run()
-        return {'results': [r.to_dict() for r in results]}

@@ -4,8 +4,7 @@ from snowplow_tracker import Subject, Tracker, Emitter, logger as sp_logger
 from snowplow_tracker import SelfDescribingJson
 from datetime import datetime
 
-from dbt.adapters.factory import get_adapter
-
+import logbook
 import pytz
 import platform
 import uuid
@@ -41,8 +40,8 @@ class TimeoutEmitter(Emitter):
         do_not_track()
 
     def http_get(self, payload):
-        sp_logger.info("Sending GET request to %s..." % self.endpoint)
-        sp_logger.debug("Payload: %s" % payload)
+        sp_logger.info("Sending GET request to {}...".format(self.endpoint))
+        sp_logger.debug("Payload: {}".format(payload))
         r = requests.get(self.endpoint, params=payload, timeout=5.0)
 
         msg = "GET request finished with status code: " + str(r.status_code)
@@ -125,6 +124,8 @@ def get_run_type(args):
 
 
 def get_invocation_context(user, config, args):
+    # put this in here to avoid an import cycle
+    from dbt.adapters.factory import get_adapter
     try:
         adapter_type = get_adapter(config).type()
     except Exception:
@@ -336,3 +337,14 @@ def initialize_tracking(cookie_dir):
         logger.debug('Got an exception trying to initialize tracking',
                      exc_info=True)
         active_user = User(None)
+
+
+class InvocationProcessor(logbook.Processor):
+    def __init__(self):
+        super().__init__()
+
+    def process(self, record):
+        record.extra.update({
+            "run_started_at": active_user.run_started_at.isoformat(),
+            "invocation_id": active_user.invocation_id,
+        })

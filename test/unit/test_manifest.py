@@ -253,12 +253,13 @@ class ManifestTest(unittest.TestCase):
             []
         )
 
-    def test__to_flat_graph(self):
+    def test__build_flat_graph(self):
         nodes = copy.copy(self.nested_nodes)
         manifest = Manifest(nodes=nodes, macros={}, docs={},
                             generated_at=datetime.utcnow(), disabled=[],
                             files={})
-        flat_graph = manifest.to_flat_graph()
+        manifest.build_flat_graph()
+        flat_graph = manifest.flat_graph
         flat_nodes = flat_graph['nodes']
         self.assertEqual(set(flat_graph), set(['nodes']))
         self.assertEqual(set(flat_nodes), set(self.nested_nodes))
@@ -266,14 +267,11 @@ class ManifestTest(unittest.TestCase):
             self.assertEqual(frozenset(node), REQUIRED_PARSED_NODE_KEYS)
 
     @mock.patch.object(tracking, 'active_user')
-    def test_get_metadata(self, mock_user):
+    def test_metadata(self, mock_user):
         mock_user.id = 'cfc9500f-dc7f-4c83-9ea7-2c581c1b38cf'
         mock_user.do_not_track = True
-        config = mock.MagicMock()
-        # md5 of 'test'
-        config.hashed_name.return_value = '098f6bcd4621d373cade4e832627b4f6'
         self.assertEqual(
-            Manifest.get_metadata(config),
+            ManifestMetadata(project_id='098f6bcd4621d373cade4e832627b4f6'),
             ManifestMetadata(
                 project_id='098f6bcd4621d373cade4e832627b4f6',
                 user_id='cfc9500f-dc7f-4c83-9ea7-2c581c1b38cf',
@@ -286,17 +284,11 @@ class ManifestTest(unittest.TestCase):
     def test_no_nodes_with_metadata(self, mock_user):
         mock_user.id = 'cfc9500f-dc7f-4c83-9ea7-2c581c1b38cf'
         mock_user.do_not_track = True
-        config = mock.MagicMock()
-        # md5 of 'test'
-        config.hashed_name.return_value = '098f6bcd4621d373cade4e832627b4f6'
+        metadata = ManifestMetadata(project_id='098f6bcd4621d373cade4e832627b4f6')
         manifest = Manifest(nodes={}, macros={}, docs={},
                             generated_at=datetime.utcnow(), disabled=[],
-                            config=config, files={})
-        metadata = {
-            'project_id': '098f6bcd4621d373cade4e832627b4f6',
-            'user_id': 'cfc9500f-dc7f-4c83-9ea7-2c581c1b38cf',
-            'send_anonymous_usage_stats': False,
-        }
+                            metadata=metadata, files={})
+
         self.assertEqual(
             manifest.writable_manifest().to_dict(),
             {
@@ -341,7 +333,8 @@ class ManifestTest(unittest.TestCase):
             path='seed.csv',
             original_file_path='seed.csv',
             root_path='',
-            raw_sql='-- csv --'
+            raw_sql='-- csv --',
+            seed_file_path='data/seed.csv'
         )
         manifest = Manifest(nodes=nodes, macros={}, docs={},
                             generated_at=datetime.utcnow(), disabled=[],
@@ -591,12 +584,13 @@ class MixedManifestTest(unittest.TestCase):
             []
         )
 
-    def test__to_flat_graph(self):
+    def test__build_flat_graph(self):
         nodes = copy.copy(self.nested_nodes)
         manifest = Manifest(nodes=nodes, macros={}, docs={},
                             generated_at=datetime.utcnow(), disabled=[],
                             files={})
-        flat_graph = manifest.to_flat_graph()
+        manifest.build_flat_graph()
+        flat_graph = manifest.flat_graph
         flat_nodes = flat_graph['nodes']
         self.assertEqual(set(flat_graph), set(['nodes']))
         self.assertEqual(set(flat_nodes), set(self.nested_nodes))
